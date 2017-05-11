@@ -13,6 +13,11 @@ ENV APACHE_RUN_USER www-data
 ENV APACHE_RUN_GROUP www-data
 ENV APACHE_LOG_DIR /var/log/apache2
 
+
+RUN mkdir -p /var/www/html/FlowViewer
+RUN mkdir -p /var/www/html/FlowGrapher
+RUN mkdir -p /var/www/html/FlowTracker
+
 RUN chown -R root:www-data /var/www
 RUN chmod u+rwx,g+rx,o+rx /var/www
 
