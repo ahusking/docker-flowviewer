@@ -7,7 +7,7 @@ RUN wget -O /usr/local/src/FlowViewer_4.6.tar 'https://downloads.sourceforge.net
 RUN tar xvf /usr/local/src/FlowViewer_4.6.tar -C /usr/local/src
 RUN mv /usr/local/src/FlowViewer_4.6 /usr/lib/cgi-bin
 RUN  a2enmod cgi
-RUN printf '%s\n  %s\n  %s\n  %s\n %s\n' '<Directory /var/www/>' 'Options Indexes FollowSymLinks'  'AllowOverride None' 'Require all granted' '</Directory>' > /etc/apache2/apache2.conf 
+RUN printf '%s\n  %s\n  %s\n  %s\n %s\n' '<Directory /usr/lib/cgi-bin>' 'Options Indexes FollowSymLinks'  'AllowOverride None' 'Require all granted' '</Directory>' >> /etc/apache2/apache2.conf
 RUN service apache2 restart
 
 ENV APACHE_RUN_USER www-data
