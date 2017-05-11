@@ -1,5 +1,5 @@
 FROM ubuntu:latest
-MAINTAINER Andrew Husking
+MAINTAINER Andrew Husking (andrew@husking.id.au)
 RUN apt-get update
 RUN apt-get -y -q install curl apache2 libgd-graph-perl rrdtool dnsutils flow-tools wget
 
