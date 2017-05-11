@@ -1,7 +1,7 @@
 FROM ubuntu:latest
 MAINTAINER Andrew Husking (andrew@husking.id.au)
 RUN apt-get update
-RUN apt-get -y -q install curl apache2 libgd-graph-perl rrdtool dnsutils flow-tools wget
+RUN apt-get -y -q install curl apache2 libgd-graph-perl rrdtool dnsutils flow-tools wget vim
 
 RUN wget -O /usr/local/src/FlowViewer_4.6.tar 'https://downloads.sourceforge.net/project/flowviewer/FlowViewer_4.6.tar?r=&ts=1494489766&use_mirror=nchc'
 RUN tar xvf /usr/local/src/FlowViewer_4.6.tar -C /usr/local/src
