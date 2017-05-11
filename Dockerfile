@@ -17,6 +17,7 @@ ENV TZ=Australia/Canberra
 
 RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
 
+COPY FlowViewer_4.6/ /usr/lib/cgi-bin/FlowViewer/
 RUN mkdir -p /var/www/html/FlowViewer
 RUN mkdir -p /var/www/html/FlowGrapher
 RUN mkdir -p /var/www/html/FlowTracker
