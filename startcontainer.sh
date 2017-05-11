@@ -1,4 +1,4 @@
 #!/bin/bash
 # usage:
-# ./startcontainer <containerID> <port number> (optional -it or other docker flag for debugging)
-docker run -d $3 -p $2:80 $1 bash -n docker-flowviewer
+# ./startcontainer <containerID> <port number> <path to flow-capture.conf>
+docker run -d -n docker-flowviewer -v $3:/etc/flow-utils/flow-capture.conf -p $2:80 $1 
