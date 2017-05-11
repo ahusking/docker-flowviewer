@@ -1,0 +1,36 @@
+#! /usr/bin/perl
+#
+# This tool will allow you to adjust older 3 Year RRDtool archives
+#
+
+$rrdtool_directory = "/var/www/cgi-bin/FlowMonitor_Files/FlowMonitor_RRDtool";
+
+while ($existing_rrdtool = <$rrdtool_directory/*>) {
+
+	$check_file = "rrdtool info $existing_rrdtool | grep \"rra\\[3\\].rows = 797\"";
+	
+	open(CHECK,"$check_file 2>&1|");
+	while (<CHECK>) {
+		if (/797/) { 
+
+			print "Updating: $existing_rrdtool\n";
+
+			$resize_average = "rrdtool resize $existing_rrdtool 3 GROW 303";
+			system($resize_average);
+			
+			$resize_file  = "$rrdtool_directory/resize.rrd";
+			$resize_file1 = "$rrdtool_directory/resize1.rrd";
+			$move_command = "mv -f $resize_file $resize_file1";
+			system($move_command);
+			
+			$resize_max = "rrdtool resize $resize_file1 7 GROW 303";
+			system($resize_max);
+
+			$move_command = "mv -f $resize_file $existing_rrdtool";
+			system($move_command);
+
+			$remove_command = "rm -f $resize_file1";
+			system($remove_command);
+		}
+	}
+}

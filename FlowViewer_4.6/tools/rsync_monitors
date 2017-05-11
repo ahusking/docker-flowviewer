@@ -1,0 +1,8 @@
+time1=`date +%s`
+monitors="/var/www/cgi-bin/FlowMonitor_Files"
+printf "\n\n******* Starting rsync for $monitors *******\n"
+echo `date`
+rsync -avh -e "ssh -q" --exclude="tmp*" --delete --chmod="u+rwx,g+rwx,o+rX,o-w" $monitors user@192.168.100.110:/var/www/cgi-bin/
+time2=`date +%s`
+delta=`echo "$time2 - $time1" | bc`
+printf "\nTotal run time: $delta seconds\n"

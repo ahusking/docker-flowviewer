@@ -1,0 +1,71 @@
+#! /usr/bin/perl
+#
+# analyze_flowmonitor_debug
+#
+# analyze_flowmonitor_debug will parse the DEBUG_MONITOR_C debug file 
+# created by FlowMonitor_Collector to search for segments of the code
+# that are taking longer than the specified cutoff time period. One
+# must specify the file name within this script ($search_file).
+
+use FlowViewer_Configuration;
+use FlowViewer_Utilities;
+use File::stat;
+use lib $cgi_bin_directory;
+
+$cutoff = $ARGV[0];  # defaults to 0.3 seconds
+$type   = $ARGV[1];  # "s" will limit to SiLK, "f" to flow-tools, "b" for both
+$out    = $ARGV[2];  # "all" will print every time_check line
+$high_cutoff  = 20;  # will skip any segment taking longer than this value
+
+if ($cutoff == 0) { $cutoff = 0.3; }
+
+$search_file = "/var/www/cgi-bin/FlowViewer_4.6/Flow_Working/DEBUG_MONITOR_C";
+
+$string = "\"SiLK|flow|FlowMonitor_Filters\"";
+$grep_command = "egrep $string $search_file";
+
+print "  \n  Analyzing file: $search_file\n";
+print "    Using cutoff: $cutoff\n\n";
+
+$first_running = 1;
+open(GREP,"$grep_command 2>&1|");
+while (<GREP>) {
+	chop;
+	if (/running:/) { 
+		($left_part,$running_secs) = split(/running: /);
+		if ($first_running) { $start_running = $running_secs; $first_running = 0; }
+	}
+	
+	if (/FlowMonitor_Filters/) { 
+		($left_part,$right_part) = split(/\./);
+		$filter_name = substr($left_part,-30,30);
+	}
+	($left_half,$right_half) = split(/elapsed seconds:/,$_);
+	($left_part,$elapsed_secs,$right_part) = split(/\s+/,$right_half);
+	($start,$end) = split(/ to: /,$left_half);
+	if ($type eq "s") {
+		if (!($start =~ /SiLK/) || !($end =~ /SiLK/)) { next; }
+	} elsif ($type eq "f") {
+		if (!($start =~ /flow/) || !($end =~ /flow/)) { next; }
+	}
+	if ($out eq "all") { 
+		print "  $filter_name  ";
+		print "  $_"; 
+		if ($elapsed_secs > $high_cutoff) { next; }
+		$excess = $elapsed_secs - $cutoff;
+		if ($elapsed_secs > $cutoff) { print " ***\n"; $total_secs += $elapsed_secs; $total_excess += $excess; } else { print "\n"; }
+	} else {
+		if ($elapsed_secs > $high_cutoff) { next; }
+		$excess = $elapsed_secs - $cutoff;
+		if ($elapsed_secs > $cutoff) { print "  $filter_name  "; print $_; $total_secs += $elapsed_secs; $total_excess += $excess; print "\n";}
+	}
+}
+$end_running = $running_secs;
+$total_running = $end_running - $start_running;
+
+$total_secs   = int($total_secs + 0.5);
+$total_excess = int($total_excess + 0.5);
+$total_running = int($total_running + 0.5);
+print "\n  Sum of elapsed times greater than cutoff: $total_secs secs.";
+print "\n   Sum of excess of cutoff for above times: $total_excess secs.\n";
+print "\n                            Total run time: $total_running secs.\n\n";

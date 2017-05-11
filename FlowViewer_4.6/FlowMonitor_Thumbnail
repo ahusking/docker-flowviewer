@@ -1,0 +1,401 @@
+#! /usr/bin/perl
+#
+#  Purpose:
+#  FlowMonitor_Thumbnail creates a Thumbnail graph of an existing 
+#  FlowMonitor for the Dashboard.
+#
+#  Description:
+#  FlowMonitor_Thumbnail is a script that is invoked from
+#  FlowMonitor_Dashboard.cgi to create a Dashboard Thumbnail graph,
+#  or from FlowMonitor_Grapher to update each Dashboard Thumbnail.
+#
+#  Controlling Parameters (specified in FlowViewer_Configuration.pm):
+#  Name                 Description
+#  -----------------------------------------------------------------------
+#  rrd_area             Color of the area underneath the graph
+#  rrd_line             Color of the line at the top of the graphed area
+#  rrd_width            Width of the graph
+#  rrd_height           Height of the graph
+#  rrd_font             Color of the font used in the graphs
+#  rrd_back             Image background color
+#  rrd_canvas           Color of the background of the actual graph
+#  rrd_grid             Color of the minor grid lines
+#  rrd_mgrid            Color of the major grid lines
+#  rrd_frame            Color of the graph frame
+#  rrd_shadea           Color for the top and left border
+#  rrd_shadeb           Color for the right and bottom border
+#  rrd_thick            Thickness of the line at the top of the graph
+#  rrd_lower_limit      Bottom of the y-axis
+#  rrd_slope_mode       "--slope-mode" will round off tops of graph  
+#  rrd_vrule_color      Color of the line that indicates when the filter was changed
+#
+#  Modification history:
+#  Author       Date            Vers.   Description
+#  -----------------------------------------------------------------------
+#  J. Loiacono  05/08/2012      4.0     Original version. (reuses FT_Grapher)
+#  J. Loiacono  07/04/2014      4.4     Multiple dashboards
+#  J. Loiacono  11/02/2014      4.5     FlowTracker to FlowMonitor rename
+#  J. Loiacono  01/26/2015      4.6     Timezone from system (not Configuration)
+#
+#$Author$
+#$Date$
+#$Header$
+#
+###########################################################################
+#
+#               BEGIN EXECUTABLE STATEMENTS
+#
+ 
+use FlowViewer_Configuration;
+use FlowViewer_Utilities;
+use FlowViewer_UI;
+use lib $cgi_bin_directory;
+
+if ($debug_monitor eq "Y") { open (DEBUG,">$work_directory/DEBUG_MONITOR_T"); }
+if ($debug_monitor eq "Y") { print DEBUG "In FlowMonitor_Thumbnail.cgi\n"; }
+
+$dashboard      = $ARGV[0];
+$monitor_name  = $ARGV[1];
+$graph_type     = $ARGV[2];
+$position       = $ARGV[3];
+
+$switch_dashboard = $dashboard;
+$switch_dashboard =~ s/\~/ /;
+$active_db_directory = $dashboard_directory;
+for ($i=0;$i<=$#dashboard_titles;$i++) {
+        if (($dashboard_titles[$i] eq $switch_dashboard) && ($i > 0)) { $active_db_directory = $other_dashboards[$i-1]; }
+}
+if ($debug_monitor eq "Y") { print DEBUG "switch_dashboard: $switch_dashboard   active_db_directory: $active_db_directory\n"; }
+
+if (!-e "$active_db_directory") {
+       	$mkdir_command = "mkdir $active_db_directory";
+       	system($mkdir_command);
+       	chmod $html_dir_perms, $active_db_directory;
+}
+
+$graph_type = uc(substr($graph_type,0,1)) . substr($graph_type,1,7);
+
+if ($debug_monitor eq "Y") { print DEBUG "monitor_name: $monitor_name  graph_type: $graph_type  position: $position\n"; }
+
+# Load the colors
+
+$colors_file = "$cgi_bin_directory/FlowGrapher_Colors";
+
+open (COLORS,"<$colors_file") || die "Can't open colors file; $colors_file\n";
+while (<COLORS>) {
+        chop;
+        ($red,$green,$blue,$color_1,$color_2) = split(/\s+/);
+        $color_name = $color_1;
+        if ($color_2 ne "") { $color_name = $color_1 . " " . $color_2; }
+        $R = &dec2hex($red);   if (length($R) < 2) { $R = "0" . $R; }
+        $G = &dec2hex($green); if (length($G) < 2) { $G = "0" . $G; }
+        $B = &dec2hex($blue);  if (length($B) < 2) { $B = "0" . $B; }
+        $hex_colors{$color_name} =  $R . $G . $B;
+}
+$hex_colors{"standard"} = $rrd_area;
+sub dec2hex($) { return sprintf("%lx", $_[0]) }
+
+if ($time_zone eq "") {
+        open(DATE,"date 2>&1|");
+        while (<DATE>) {
+                ($d_tz,$m_tz,$dt_tz,$t_tz,$time_zone,$y_tz) = split(/\s+/,$_);
+        }
+}
+
+$current_time = time;
+$current_time_out = epoch_to_date($current_time,"LOCAL");
+$current_time_rrd = $current_time_out . " $time_zone";
+$current_time_rrd =~ s/:/\\:/g;
+$end_rrd = time;
+
+if (-e "$filter_directory/$monitor_name.archive") {
+        $graph_class = "Archive";
+        $extension   = "archive"; }
+if (-e "$filter_directory/$monitor_name.grp") {
+        $graph_class = "Group";
+        $extension   = "grp"; }
+if (-e "$filter_directory/$monitor_name.fil") {
+        $graph_class = "Individual";
+        $extension   = "fil"; }
+
+$filter_file = $filter_directory ."/". $monitor_name .".". $extension;
+
+# Load information from filter file for graph creation
+
+@component_links = ();
+$hrule = "";
+$alert_threshold = 0;
+
+open (FILTER,"<$filter_file");
+while (<FILTER>) {
+        chop;
+        $key = substr($_,0,8);
+        if ($key eq " input: ") {
+                ($input,$field,$field_value) = split(/: /);
+                if(($field eq "monitor_label") || ($field eq "tracking_label")) { $monitor_label = $field_value; }
+                if(($field eq "monitor_type")  || ($field eq "tracking_type"))  { $monitor_type = $field_value; }
+                if ($field eq "alert_threshold") { $alert_threshold = $field_value; }
+        }
+}
+close (FILTER);
+
+if ($alert_threshold > 0) {
+        $hrule = "    HRULE:$alert_threshold#$rrd_hrule_color";
+}
+
+if ($graph_class eq "Group") {
+        open (FILTER,"<$filter_file");
+        while (<FILTER>) {
+                chop;
+                $key = substr($_,0,8);
+                if ($key eq " input: ") {
+                        next;
+                } else {
+                        ($component_position,$component_label,$component_color) = split(/\^/);
+                        $component_file = $component_label;
+                        $component_file =~ s/^\s+//;
+                        $component_file =~ s/\s+$//;
+                        $component_file =~ s/\&/-/g;
+                        $component_file =~ s/\//-/g;
+                        $component_file =~ s/\(/-/g;
+                        $component_file =~ s/\)/-/g;
+                        $component_file =~ s/\./-/g;
+                        $component_file =~ s/\s+/_/g;
+                        $component_file =~ tr/[A-Z]/[a-z]/;
+                        $component_html  = $monitor_short ."/". $component_file ."/index.html";
+                        push (@component_links,$component_html);
+                }
+        }
+}
+
+# Create one of the five graphs for this Monitor
+
+$rrdtool_file = "$rrdtool_directory/$monitor_name" . ".rrd";
+
+$x_grid  = "";
+
+if ($graph_type eq "Daily") {
+        $start_rrd = $end_rrd - 86400;
+	$line_peak = "",
+        $sample = "             Graph Last Updated\\: $current_time_rrd";
+        if ($extension eq "grp") { $sample = "          Graph Last Updated\\: $current_time_rrd"; }
+        $rrd_title = "\"$monitor_label\: Last 24 Hours\"";
+        $thumbnail_name = $monitor_name ."_daily_" . $position . ".png";
+} elsif ($graph_type eq "Weekly") {
+        $start_rrd = $end_rrd - (7*86400);
+	$line_peak = "LINE$rrd_thick:flowpeak#$rrd_peak",
+        $sample = "             Graph Last Updated\\: $current_time_rrd";
+        if ($extension eq "grp") { $sample = "          Graph Last Updated\\: $current_time_rrd"; }
+        $rrd_title = "\"$monitor_label\: Last 7 days\"";
+        $thumbnail_name = $monitor_name ."_weekly_" . $position . ".png";
+} elsif ($graph_type eq "Monthly") {
+        $start_rrd = $end_rrd - (28*86400);
+	$line_peak = "LINE$rrd_thick:flowpeak#$rrd_peak",
+        $sample = "             Graph Last Updated\\: $current_time_rrd";
+        if ($extension eq "grp") { $sample = "          Graph Last Updated\\: $current_time_rrd"; }
+        $rrd_title = "\"$monitor_label\: Last 4 Weeks\"";
+        $thumbnail_name = $monitor_name ."_monthly_" . $position . ".png";
+} elsif ($graph_type eq "Yearly") {
+        $start_rrd = $end_rrd - (365*86400);
+	$line_peak = "LINE$rrd_thick:flowpeak#$rrd_peak",
+        $sample = "             Graph Last Updated\\: $current_time_rrd";
+        if ($extension eq "grp") { $sample = "          Graph Last Updated\\: $current_time_rrd"; }
+        $rrd_title = "\"$monitor_label\: Last 12 Months\"";
+        $thumbnail_name = $monitor_name ."_yearly_" . $position . ".png";
+} elsif ($graph_type eq "3Years") {
+        $start_rrd = $end_rrd - (3*365*86400);
+	$line_peak = "LINE$rrd_thick:flowpeak#$rrd_peak",
+        $sample = "             Graph Last Updated\\: $current_time_rrd";
+        if ($extension eq "grp") { $sample = "          Graph Last Updated\\: $current_time_rrd"; }
+        $rrd_title = "\"$monitor_label\: Last Three Years\"";
+        $x_grid = "--x-grid MONTH:1:YEAR:1:MONTH:2:2800000:%b";
+        $thumbnail_name = $monitor_name ."_3years_" . $position . ".png";
+}
+
+$graph_file = "$active_db_directory/$thumbnail_name";
+
+if ($extension eq "grp") {
+
+        $DEF_parameters  = "";
+        $AREA_parameters = "";
+        @components = ();
+
+        open (GROUP,"<$filter_file");
+        @group_lines = <GROUP>;
+        close (GROUP);
+
+        foreach $group_line (@group_lines) {
+                if ($group_line =~ / input:/) { next; }
+                else { push (@components,$group_line); }
+        }
+
+        $num_components = 0;
+        $first_below = 1;
+        foreach $component (@components) {
+
+                $num_components++;
+                chop $component;
+                ($component_position,$component_label,$component_color) = split(/\^/,$component);
+
+                $component_file = $component_label;
+                $component_file =~ s/^\s+//;
+                $component_file =~ s/\s+$//;
+                $component_file =~ s/\&/-/g;
+                $component_file =~ s/\//-/g;
+                $component_file =~ s/\(/-/g;
+                $component_file =~ s/\)/-/g;
+                $component_file =~ s/\./-/g;
+                $component_file =~ s/\s+/_/g;
+                $component_file =~ tr/[A-Z]/[a-z]/;
+		$component_fil  = $filter_directory  ."/". $component_file .".fil";
+                $component_rrd  = $rrdtool_directory ."/". $component_file .".rrd";
+
+                $component_archive  = $rrdtool_directory ."/". $component_file .".archive";
+                if (-e $component_archive) { $component_rrd = $component_archive; }
+
+                $DEF_parameters  .= "DEF:flowbits$num_components=$component_rrd:flowbits:AVERAGE ";
+                if ($num_components < 5) { $AREA_parameters .= "COMMENT:\"     \" "; }
+
+                if ($component_position < 200) {
+                        if ($num_components < 5) {
+                                $AREA_parameters .= "AREA:flowbits$num_components#$hex_colors{$component_color}:\"$component_label\\n\":STACK ";
+                        } else {
+                                $AREA_parameters .= "AREA:flowbits$num_components#$hex_colors{$component_color}::STACK ";
+                        }
+                } elsif (($component_position >= 200) && ($first_below)) {
+                        $DEF_parameters .= "CDEF:flowbits_below$num_components=flowbits$num_components,-1,* ";
+                        if ($num_components < 5) {
+                                $AREA_parameters .= "AREA:flowbits_below$num_components#$hex_colors{$component_color}:\"$component_label\\n\" ";
+                        } else {
+                                $AREA_parameters .= "AREA:flowbits_below$num_components#$hex_colors{$component_color}: ";
+                        }
+                        $first_below = 0;
+                } else {
+                        $DEF_parameters .= "CDEF:flowbits_below$num_components=flowbits$num_components,-1,* ";
+                        if ($num_components < 5) {
+                                $AREA_parameters .= "AREA:flowbits_below$num_components#$hex_colors{$component_color}:\"$component_label\\n\":STACK ";
+                        } else {
+                                $AREA_parameters .= "AREA:flowbits_below$num_components#$hex_colors{$component_color}::STACK ";
+                        }
+                }
+
+		open (FILTER,"<$component_fil"); 
+		while (<FILTER>) { 
+			chop;    
+			$key = substr($_,0,8); 
+			if ($key eq " input: ") { 
+				($input,$field,$field_value) = split(/: /); 
+				if (($field eq "monitor_type") || ($field eq "tracking_type")) { $comp_monitor_type = $field_value; last; }
+			}
+		}
+		close (FILTER);
+        }
+
+	# Set Vertical label for Group
+
+	if ($comp_monitor_type =~ /fps/) {
+		$vertical_label = "Flows per Second";
+	} elsif ($comp_monitor_type =~ /pps/) {
+		$vertical_label = "Packets per Second";
+	} else {
+		$vertical_label = "Bits per Second";
+	}
+	
+        @graph_parameters =
+        ('--title',"$rrd_title",
+        '--start',$start_rrd,
+        '--end',$end_rrd,
+        '--width',$thumbnail_width,
+        '--height',$thumbnail_height,
+        '--interlace',
+        '--vertical-label',"\"$vertical_label\"",  
+        $x_grid,
+        $rrd_slope_mode,
+        "--color=FONT#$rrd_font",
+        "--color=BACK#$rrd_back",
+        "--color=CANVAS#$rrd_canvas",
+        "--color=GRID#$rrd_grid",
+        "--color=MGRID#$rrd_mgrid",
+        "--color=FRAME#$rrd_frame",
+        "--color=SHADEA#$rrd_frame",
+        "--color=SHADEB#$rrd_frame",
+        '--lower-limit',$rrd_lower_limit,
+        $DEF_parameters,
+        "COMMENT:\"$sample   \"",);
+
+        if ($num_components < 5) {
+                $blank_lines = 5 - $num_components;
+                for ($j=0;$j<$blank_lines;$j++) { push(@graph_parameters,"COMMENT:\" \\n\""); }
+        }
+
+        push(@graph_parameters,$AREA_parameters);
+
+} else {
+
+	# Set Vertical label
+	
+	if ($monitor_type =~ /fps/) {
+		$vertical_label = "Flows per Second";
+		$type_per_second = "fps";
+	} elsif ($monitor_type =~ /pps/) {
+		$vertical_label = "Packets per Second";
+		$type_per_second = "pps";
+	} else {
+		$vertical_label = "Bits per Second";
+		$type_per_second = "bps";
+	}
+
+        @graph_parameters =
+        ('--title',"$rrd_title",
+        '--start',$start_rrd,
+        '--end',$end_rrd,
+        '--width',$thumbnail_width,
+        '--height',$thumbnail_height,
+        '--interlace',
+        '--vertical-label',"\"$vertical_label\"",  
+        $x_grid,
+        $rrd_slope_mode,
+        "--color=FONT#$rrd_font",
+        "--color=BACK#$rrd_back",
+        "--color=CANVAS#$rrd_canvas",
+        "--color=GRID#$rrd_grid",
+        "--color=MGRID#$rrd_mgrid",
+        "--color=FRAME#$rrd_frame",
+        "--color=SHADEA#$rrd_frame",
+        "--color=SHADEB#$rrd_frame",
+        '--lower-limit',$rrd_lower_limit,
+        "DEF:flowbits=$rrdtool_file:flowbits:AVERAGE",
+        "DEF:flowpeak=$rrdtool_file:flowbits:MAX",
+        'VDEF:flowbitsmax=flowbits,MAXIMUM',
+        'VDEF:flowbitsavg=flowbits,AVERAGE',
+        'VDEF:flowbitsmin=flowbits,MINIMUM',
+        'VDEF:flowbitspct=flowbits,95,PERCENT',
+        "AREA:flowbits#$rrd_area",
+        "LINE$rrd_thick:flowbits#$rrd_line:",
+        "COMMENT:\"$sample   \"",
+        "COMMENT:\" \\n\"",
+        "COMMENT:\"             Maximum    \"",
+	"GPRINT:flowbitsmax:\"%6.2lf %S$type_per_second\"",
+        "COMMENT:\"             \"",
+        $line_peak,
+        "COMMENT:\" \\n\"",
+        "COMMENT:\"             95thPct    \"",
+        "GPRINT:flowbitspct:\"%6.2lf %S$type_per_second \"",
+        "COMMENT:\" \\n\"",
+        "COMMENT:\"             Average    \"",
+        "GPRINT:flowbitsavg:\"%6.2lf %S$type_per_second \"",
+        "COMMENT:\" \\n\"",
+        "COMMENT:\"             Minimum    \"",
+        "GPRINT:flowbitsmin:\"%6.2lf %S$type_per_second \"",
+        "COMMENT:\" \\n\"",
+        $hrule);
+}
+
+$rrd_fonts = "--font DEFAULT:6";
+$rrdgraph_command = "$rrdtool_bin_directory/rrdtool graph " . "$rrd_fonts " . "$graph_file " . "@graph_parameters " . ">/dev/null";
+
+system($rrdgraph_command);
+
+chmod $graph_file_perms, $graph_file;
+
+if ($debug_monitor eq "Y") { print DEBUG "finished $graph_type for $graph_file\n"; }

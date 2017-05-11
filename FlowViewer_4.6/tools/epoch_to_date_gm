@@ -1,0 +1,22 @@
+#!/usr/bin/perl 
+ 
+# Usage: epoch_to_date_gm epoch_time
+#
+# Example:
+#
+# >./epoch_to_date_gm 1373632200
+# epoch_date = 1373632200;   date = 07/12/2013 12:30:00 (GMT)
+
+$epoch_date = $ARGV[0]; 
+ 
+($sec,$min,$hr,$date,$mnth,$yr,$day,$yr_date,$DST) = gmtime($epoch_date); 
+$current_yr_date = $yr_date; 
+$mnth++; 
+$yr += 1900; 
+if ($date<10) {$date = "0" . $date; } 
+if ($mnth<10) {$mnth = "0" . $mnth; } 
+if ($hr<10) {$hr = "0" . $hr; } 
+if ($min<10) {$min = "0" . $min; } 
+if ($sec<10) {$sec = "0" . $sec; } 
+$associated_date = $mnth ."\/". $date ."\/". $yr ." ". $hr .":". $min .":". $sec; 
+print"epoch_time = $epoch_date;   calendar_time = $associated_date (GMT)\n"; 

@@ -1,0 +1,903 @@
+#! /usr/bin/perl
+#
+# This script will analyze netflow export packets
+#
+#  Step 1 - Capture raw exports (example port 9997):
+#
+#  >tcpdump -s1500 port 9997 -w raw_data_file
+#
+#  Step 2 - Unpack the raw captured data ...
+#
+#  >tcpdump -X -r raw_data_file > expanded_data_file
+#
+#  Step 3 - Analyze the expanded data ...
+#
+#  >analyze_netflow_packets 2 v9 expanded_data_file > ~/temp.out
+#
+#  Step 4 - View the results ....
+#
+#  >vi ~/temp.out
+#
+# Usage: analyze_netflow_packets <debug_level> <suspected_version, e.g., v1, v5, v7, v9)> <capture_file>
+#
+# Example:
+#
+# analyze_netflow_packets 0 v9 expanded_data_file > ~/temp.out
+
+$debug                = $ARGV[0];
+$suspected_version    = $ARGV[1];
+$packet_file          = $ARGV[2];
+$columns_out          = 3;
+$total_flows_examined = 0;
+
+# Base byte numbers for each parameter
+
+if ($suspected_version eq "v1") {
+
+	$netflow_version_base   = 28;   # 2 bytes
+	$flowset_records_base   = 30;   # 2 bytes
+	$sys_uptime_base        = 32;   # 4 bytes
+	$unix_secs_base         = 36;   # 4 bytes
+	$unix_nsecs_base        = 40;   # 4 bytes
+
+	$src_addr_base          = 44;   # 4 bytes
+	$dst_addr_base          = 48;   # 4 bytes
+	$nexthop_ip_base        = 52;   # 4 bytes
+	$input_if_base          = 56;   # 2 bytes
+	$output_if_base         = 58;   # 2 bytes
+	$num_packets_base       = 60;   # 4 bytes
+	$num_bytes_base         = 64;   # 4 bytes
+	$start_time_base        = 68;   # 4 bytes
+	$end_time_base          = 72;   # 4 bytes
+	$src_port_base          = 76;   # 2 bytes
+	$dst_port_base          = 78;   # 2 bytes
+	$pad1_base              = 80;   # 2 bytes
+
+	$protocol_base          = 82;   # 1 bytes
+	$tos_base               = 83;   # 1 bytes
+	$tcp_flags_base         = 84;   # 1 bytes
+	$pad2_base              = 85;   # 7 bytes
+
+} elsif ($suspected_version eq "v5") {
+
+	$netflow_version_base   = 28;   # 2 bytes
+	$flowset_records_base   = 30;   # 2 bytes
+	$sys_uptime_base        = 32;   # 4 bytes
+	$unix_secs_base         = 36;   # 4 bytes
+	$unix_nsecs_base        = 40;   # 4 bytes
+
+	$flow_sequence_base     = 44;   # 4 bytes
+	$engine_type_base       = 48;   # 1 bytes
+	$engine_id_base         = 49;   # 1 bytes
+	$sampling_interval_base = 50;   # 2 bytes
+
+	$src_addr_base          = 52;   # 4 bytes
+	$dst_addr_base          = 56;   # 4 bytes
+	$nexthop_ip_base        = 60;   # 4 bytes
+	$input_if_base          = 64;   # 2 bytes
+	$output_if_base         = 66;   # 2 bytes
+	$num_packets_base       = 68;   # 4 bytes
+	$num_bytes_base         = 72;   # 4 bytes
+	$start_time_base        = 76;   # 4 bytes
+	$end_time_base          = 80;   # 4 bytes
+	$src_port_base          = 84;   # 2 bytes
+	$dst_port_base          = 86;   # 2 bytes
+	$pad1_base              = 88;   # 1 bytes
+
+	$tcp_flags_base         = 89;   # 1 bytes
+	$protocol_base          = 90;   # 1 bytes
+	$tos_base               = 91;   # 1 bytes
+	$src_as_base            = 92;   # 2 bytes
+	$dst_as_base            = 94;   # 2 bytes
+	$src_mask_base          = 96;   # 1 bytes
+	$dst_mask_base          = 97;   # 1 bytes
+	$pad2_base              = 98;   # 2 bytes
+
+} elsif ($suspected_version eq "v7") {
+
+	$netflow_version_base   = 28;   # 2 bytes
+	$flowset_records_base   = 30;   # 2 bytes
+	$sys_uptime_base        = 32;   # 4 bytes
+	$unix_secs_base         = 36;   # 4 bytes
+	$unix_nsecs_base        = 40;   # 4 bytes
+
+	$flow_sequence_base     = 44;   # 4 bytes
+	$reserved_base          = 48;   # 4 bytes
+
+	$src_addr_base          = 52;   # 4 bytes
+	$dst_addr_base          = 56;   # 4 bytes
+	$nexthop_ip_base        = 60;   # 4 bytes
+	$input_if_base          = 64;   # 2 bytes
+	$output_if_base         = 66;   # 2 bytes
+	$num_packets_base       = 68;   # 4 bytes
+	$num_bytes_base         = 72;   # 4 bytes
+	$start_time_base        = 76;   # 4 bytes
+	$end_time_base          = 80;   # 4 bytes
+	$src_port_base          = 84;   # 2 bytes
+	$dst_port_base          = 86;   # 2 bytes
+	$pad1_base              = 88;   # 1 bytes
+
+	$tcp_flags_base         = 89;   # 1 bytes
+	$protocol_base          = 90;   # 1 bytes
+	$tos_base               = 91;   # 1 bytes
+	$src_as_base            = 92;   # 2 bytes
+	$dst_as_base            = 94;   # 2 bytes
+	$src_mask_base          = 96;   # 1 bytes
+	$dst_mask_base          = 97;   # 1 bytes
+	$invalids_base          = 98;   # 2 bytes
+	$bypass_router_base     = 100;  # 4 bytes
+
+} elsif ($suspected_version eq "v9") {
+
+	$netflow_version_base   = 28;   # 2 bytes
+	$flowset_records_base   = 30;   # 2 bytes
+	$sys_uptime_base        = 32;   # 4 bytes
+	$unix_secs_base         = 36;   # 4 bytes
+	$sequence_number_base   = 40;   # 4 bytes
+	$source_id_base         = 44;   # 4 bytes
+	$flowset_id_base        = 48;   # 2 bytes
+	$flowset_length_base    = 50;   # 2 bytes
+	$template_id_base       = 52;   # 2 bytes
+	$field_count_base       = 54;   # 2 bytes
+	$template_fields_base   = 56;   # 2 bytes per
+
+	$ipfix_element[1]   = "octetDeltaCount";
+	$ipfix_element[2]   = "packetDeltaCount";
+	$ipfix_element[4]   = "protocolIdentifier";
+	$ipfix_element[5]   = "ipClassOfService*";               # Not supported by SiLK 
+	$ipfix_element[6]   = "tcpControlBits";
+	$ipfix_element[7]   = "sourceTransportPort";
+	$ipfix_element[8]   = "sourceIPv4Address";
+	$ipfix_element[9]   = "sourceIPv4PrefixLength*";         # Not supported by SiLK
+	$ipfix_element[10]  = "ingressInterface";
+	$ipfix_element[11]  = "destinationTransportPort";
+	$ipfix_element[12]  = "destinationIPv4Address";
+	$ipfix_element[13]  = "destinationIPv4PrefixLength*";    # Not supported by SiLK
+	$ipfix_element[14]  = "egressInterface";
+	$ipfix_element[15]  = "ipNextHopIPv4Address"; 
+	$ipfix_element[16]  = "bgpSourceAsNumber*";              # Not supported by SiLK 
+	$ipfix_element[17]  = "bgpDestinationAsNumber*";         # Not supported by SiLK 
+	$ipfix_element[19]  = "postMCastPacketDeltaCount*";      # Not supported by SiLK 
+	$ipfix_element[20]  = "postMCastOctetDeltaCount*";       # Not supported by SiLK 
+	$ipfix_element[21]  = "flowEndSysUpTime";
+	$ipfix_element[22]  = "flowStartSysUpTime";
+	$ipfix_element[27]  = "sourceIPv6Address";
+	$ipfix_element[28]  = "destinationIPv6Address";    
+	$ipfix_element[29]  = "sourceIPv6PrefixLength*";         # Not supported by SiLK
+	$ipfix_element[30]  = "destinationIPv6PrefixLength*";    # Not supported by SiLK
+	$ipfix_element[31]  = "flowLabelIPv6*";                  # Not supported by SiLK
+	$ipfix_element[48]  = "RESERVED*";                       # Not supported by SiLK
+	$ipfix_element[51]  = "RESERVED*";                       # Not supported by SiLK
+	$ipfix_element[58]  = "vlanId";
+	$ipfix_element[59]  = "postVlanId";
+	$ipfix_element[61]  = "flowDirection*";                  # Not supported by SiLK
+	$ipfix_element[62]  = "ipNextHopIPv6Address";
+	$ipfix_element[64]  = "ipv6ExtensionHeaders*";           # Not supported by SiLK
+	$ipfix_element[85]  = "octetTotalCount";
+	$ipfix_element[86]  = "packetTotalCount";
+	$ipfix_element[136] = "flowEndReason";
+	$ipfix_element[150] = "flowStartSeconds";
+	$ipfix_element[151] = "flowEndSeconds";
+	$ipfix_element[152] = "flowStartMilliseconds";
+	$ipfix_element[153] = "flowEndMilliseconds";
+	$ipfix_element[154] = "flowStartMicroseconds";
+	$ipfix_element[155] = "flowEndMicroseconds";
+	$ipfix_element[158] = "flowStartDeltaMicroseconds";
+	$ipfix_element[159] = "flowEndDeltaMicroseconds";
+	$ipfix_element[161] = "flowDurationMilliseconds";
+	$ipfix_element[162] = "flowDurationMicroseconds";
+	$ipfix_element[231] = "initiatorOctets";
+	$ipfix_element[232] = "responderOctets";
+	$ipfix_element[298] = "initiatorPackets";
+	$ipfix_element[299] = "responderPackets";
+}
+
+print"Analyzing $packet_file, suspected to be version: $suspected_version\n\n";
+
+# Parse through, find and load all templates
+
+open(TEMPLATE,"<$packet_file");
+while (<TEMPLATE>) {
+
+	# We've hit a new UDP packet, decode the current stored one, and look to see if it is a template
+
+	if ((substr($_,2,1) eq ":") && (substr($_,5,1) eq ":")) {
+
+		$previous_received = $received;
+		$previous_proto = $proto;
+		$previous_src_and_port = $src_and_port;
+		$previous_dst_and_port = $dst_and_port;
+		$previous_type = $type;
+		$previous_len = $len;
+		$previous_payload_length = $payload_length;
+		$previous_package_seq{$source_id} = $sequence_number;
+
+		$last_byte = $previous_payload_length + 28 - 1;
+
+		chop;
+		($received,$proto,$src_and_port,$angle,$dst_and_port,$type,$len,$payload_length) = split(/ /,$_);
+
+		$packet_count++;
+
+		if ($packet_count == 1) { $first_packet_time = $received; } else { $last_packet_time = $received; }
+
+		if ($packet_count > 1) {
+
+			# Get the Netflow Header information
+
+			$netflow_version        = "";
+			$flowset_records        = "";
+			$system_uptime          = "";
+			$unix_secs              = "";
+			$unix_nsecs             = "";
+			$sequence_number        = "";
+			$source_id              = "";
+			$data_field             = 0;
+			$next_flowset_offset    = 0;
+			$current_flowset_record = 0;
+
+			$current_packet = $packet_count-1;
+			if (length($current_packet) == 1) { $current_packet = "   " . $current_packet; }
+			if (length($current_packet) == 2) { $current_packet = "  " . $current_packet; }
+			if (length($current_packet) == 3) { $current_packet = " " . $current_packet; }
+
+			# Netflow Version 
+
+			for ($i=0;$i<2;$i++) { $netflow_version .= $packet_bytes[$netflow_version_base+$i]; }
+			$netflow_version = hex($netflow_version);
+	
+			# Flowset Record Count 
+
+			for ($i=0;$i<2;$i++) { $flowset_records .= $packet_bytes[$flowset_records_base+$i]; }
+			$flowset_records = hex($flowset_records);
+
+			# System Uptime
+
+			for ($i=0;$i<4;$i++) { $system_uptime .= $packet_bytes[$sys_uptime_base+$i]; }
+			$system_uptime = hex($system_uptime);
+
+			$sys_total_secs = int($system_uptime / 1000);
+			$sys_up_secs = $sys_total_secs;
+			$sys_days = int($sys_total_secs / 86400);
+			$sys_total_secs -= $sys_days * 86400;
+			$sys_hours = int($sys_total_secs / 3600);
+			$sys_total_secs -= $sys_hours * 3600;
+			$sys_mins = int($sys_total_secs / 60);
+			$sys_total_secs -= $sys_mins * 60;
+			$sys_secs = $sys_total_secs;
+			$sys_ms = substr($system_uptime,-3,3);
+			$system_uptime = "$sys_days days $sys_hours hours $sys_mins mins $sys_secs\.$sys_ms secs";
+
+			# UNIX Seconds
+
+			for ($i=0;$i<4;$i++) { $unix_secs .= $packet_bytes[$unix_secs_base+$i]; }
+			$unix_secs = hex($unix_secs);
+			$system_boot_epoch = $unix_secs - $sys_up_secs;
+			$unix_secs = epoch_to_date_gm($unix_secs);
+
+			if (($suspected_version eq "v1") || ($suspected_version eq "v5") || ($suspected_version eq "v7")) {
+
+				$flow_sequence     = "";
+				$engine_type       = "";
+				$engine_id         = "";
+				$sampling_interval = "";
+
+				# Unix Nsecs
+	
+				for ($i=0;$i<4;$i++) { $unix_nsecs .= $packet_bytes[$unix_nsecs_base+$i]; }
+				$unix_nsecs = hex($unix_nsecs);
+	
+				if (($suspected_version eq "v5") || ($suspected_version eq "v7")) {
+					
+					# Sequence Number
+	
+					for ($i=0;$i<4;$i++) { $flow_sequence .= $packet_bytes[$flow_sequence_base+$i]; }
+					$flow_sequence = hex($flow_sequence);
+	
+					if ($suspected_version eq "v5") {
+
+						# Engine Type
+			
+						for ($i=0;$i<1;$i++) { $engine_type .= $packet_bytes[$engine_type_base+$i]; }
+						$engine_type = hex($engine_type);
+		
+						# Engine ID
+			
+						for ($i=0;$i<1;$i++) { $engine_id .= $packet_bytes[$engine_id_base+$i]; }
+						$engine_id = hex($engine_id);
+		
+						# Sampling Interval
+			
+						for ($i=0;$i<2;$i++) { $sampling_interval .= $packet_bytes[$sampling_interval_base+$i]; }
+						$sampling_interval_bin = unpack("B16", pack("N", $sampling_interval));
+						#$sampling_mode  = hex(substr($src_addr,0,2));
+						#$sampling_value = hex(substr($src_addr,0,2));
+					}
+				}
+
+				$examined_packet++;
+
+				print  "\n*** UDP examined packet number: $examined_packet\n";
+				printf "\n      %-4s %-4s      %35s : %-4s\n", $netflow_version_base,"2","Netflow Version",$netflow_version;
+				printf "      %-4s %-4s      %35s : %-4s\n", $flowset_records_base,"2","Number of Flows in Packet",$flowset_records;
+				printf "      %-4s %-4s      %35s : %-4s\n", $sys_uptime_base,"4","System Uptime",$system_uptime;
+				printf "      %-4s %-4s      %35s : %-4s\n", $unix_secs_base,"4","Unix Seconds (converted)",$unix_secs;
+				printf "      %-4s %-4s      %35s : %-4s\n", $unix_nsecs_base,"4","Unix nsecs",$unix_nsecs;
+
+				if (($suspected_version eq "v5") || ($suspected_version eq "v7")) {
+
+					printf "      %-4s %-4s      %35s : %-4s  %-5s %-15s\n", $flow_sequence_base,"4","Sequence Number",$flow_sequence,"Last:",$previous_package_seq{$flow_sequence};
+					if ($suspected_version eq "v5") {
+
+						printf "      %-4s %-4s      %35s : %-4s\n", $engine_type_base,"1","Engine Type",$engine_type;
+						printf "      %-4s %-4s      %35s : %-4s\n", $engine_id_base,"1","Engine ID",$engine_id;
+						printf "      %-4s %-4s      %35s : %-4s\n", $sampling_interval_base,"2","Sampling Interval",$sampling_interval_bin;
+					}
+				}
+
+				$total_flows_examined += $flowset_records;
+
+				for ($j=0;$j<$flowset_records;$j++) {
+
+					$src_addr          = "";
+					$dst_addr          = "";
+					$nexthop_ip        = "";
+					$input_if          = "";
+					$output_if         = "";
+					$num_packets       = "";
+					$num_bytes         = "";
+					$start_time        = "";
+					$end_time          = "";
+					$src_port          = "";
+					$dst_port          = "";
+					$pad1              = "";
+					$tcp_flags         = "";
+					$protocol          = "";
+					$tos               = "";
+					$src_as            = "";
+					$dst_as            = "";
+					$src_mask          = "";
+					$dst_mask          = "";
+					$pad2              = "";
+					$invalids          = "";
+					$bypass_router     = "";
+
+					$flowset_offset = $j * 48;
+					if ($suspected_version eq "v7") { $flowset_offset = $j * 52; }
+
+					# Src Address
+	
+					$ptr = $flowset_offset + $src_addr_base;
+					for ($i=0;$i<4;$i++) { $src_addr .= $packet_bytes[$ptr+$i]; }
+					$A1 = hex(substr($src_addr,0,2));
+					$A2 = hex(substr($src_addr,2,2));
+					$A3 = hex(substr($src_addr,4,2));
+					$A4 = hex(substr($src_addr,6,2));
+					$src_addr = $A1.".".$A2.".".$A3.".".$A4;
+					printf "\n      %-4s %-4s      %35s : %-4s\n", $ptr,"4","Src Address",$src_addr;
+	
+					# Dst Address
+	
+					$ptr = $flowset_offset + $dst_addr_base;
+					for ($i=0;$i<4;$i++) { $dst_addr .= $packet_bytes[$ptr+$i]; }
+					$A1 = hex(substr($dst_addr,0,2));
+					$A2 = hex(substr($dst_addr,2,2));
+					$A3 = hex(substr($dst_addr,4,2));
+					$A4 = hex(substr($dst_addr,6,2));
+					$dst_addr = $A1.".".$A2.".".$A3.".".$A4;
+					printf "      %-4s %-4s      %35s : %-4s\n", $ptr,"4","Dst Address",$dst_addr;
+
+					# Nexthop IP
+	
+					$ptr = $flowset_offset + $nexthop_ip_base;
+					for ($i=0;$i<4;$i++) { $nexthop_ip .= $packet_bytes[$ptr+$i]; }
+					$A1 = hex(substr($nexthop_ip,0,2));
+					$A2 = hex(substr($nexthop_ip,2,2));
+					$A3 = hex(substr($nexthop_ip,4,2));
+					$A4 = hex(substr($nexthop_ip,6,2));
+					$nexthop_ip = $A1.".".$A2.".".$A3.".".$A4;
+					printf "      %-4s %-4s      %35s : %-4s\n", $ptr,"4","NextHop IP",$nexthop_ip;
+
+					# Input IF
+		
+					$ptr = $flowset_offset + $input_if_base;
+					for ($i=0;$i<2;$i++) { $input_if .= $packet_bytes[$ptr+$i]; }
+					$input_if = hex($input_if);
+					printf "      %-4s %-4s      %35s : %-4s\n", $ptr,"2","Input IF",$input_if;
+	
+					# Output IF
+		
+					$ptr = $flowset_offset + $output_if_base;
+					for ($i=0;$i<2;$i++) { $output_if .= $packet_bytes[$ptr+$i]; }
+					$output_if = hex($output_if);
+					printf "      %-4s %-4s      %35s : %-4s\n", $ptr,"2","Output IF",$output_if;
+	
+					# Number of Packets
+		
+					$ptr = $flowset_offset + $num_packets_base;
+					for ($i=0;$i<4;$i++) { $num_packets .= $packet_bytes[$ptr+$i]; }
+					$num_packets = hex($num_packets);
+					printf "      %-4s %-4s      %35s : %-4s\n", $ptr,"4","Number of Packets",$num_packets;
+	
+					# Number of Bytes
+		
+					$ptr = $flowset_offset + $num_bytes_base;
+					for ($i=0;$i<4;$i++) { $num_bytes .= $packet_bytes[$ptr+$i]; }
+					$num_bytes = hex($num_bytes);
+					printf "      %-4s %-4s      %35s : %-4s\n", $ptr,"4","Number of Bytes",$num_bytes;
+	
+					# Start Time
+		
+					$ptr = $flowset_offset + $start_time_base;
+					for ($i=0;$i<4;$i++) { $start_time .= $packet_bytes[$ptr+$i]; }
+					$start_time = hex($start_time);
+					$start_time_secs = int(($start_time/1000) + 0.5);
+					$flow_start_epoch = $system_boot_epoch + $start_time_secs;
+					$flow_start_time = epoch_to_date_gm($flow_start_epoch);
+					printf "      %-4s %-4s      %35s : %-4s\n", $ptr,"4","Start Time",$flow_start_time;
+	
+					# End Time
+		
+					$ptr = $flowset_offset + $end_time_base;
+					for ($i=0;$i<4;$i++) { $end_time .= $packet_bytes[$ptr+$i]; }
+					$end_time = hex($end_time);
+					$end_time_secs = int(($end_time/1000) + 0.5);
+					$flow_end_epoch = $system_boot_epoch + $end_time_secs;
+					$flow_end_time = epoch_to_date_gm($flow_end_epoch);
+					printf "      %-4s %-4s      %35s : %-4s\n", $ptr,"4","End Time",$flow_end_time;
+	
+					# Source Port
+		
+					$ptr = $flowset_offset + $src_port_base;
+					for ($i=0;$i<2;$i++) { $src_port .= $packet_bytes[$ptr+$i]; }
+					$src_port = hex($src_port);
+					printf "      %-4s %-4s      %35s : %-4s\n", $ptr,"2","Source Port",$src_port;
+	
+					# Dest Port
+		
+					$ptr = $flowset_offset + $dst_port_base;
+					for ($i=0;$i<2;$i++) { $dst_port .= $packet_bytes[$ptr+$i]; }
+					$dst_port = hex($dst_port);
+					printf "      %-4s %-4s      %35s : %-4s\n", $ptr,"2","Dest Port",$dst_port;
+	
+					# Protocol
+		
+					$ptr = $flowset_offset + $protocol_base;
+					for ($i=0;$i<1;$i++) { $protocol .= $packet_bytes[$ptr+$i]; }
+					$protocol = hex($protocol);
+					printf "      %-4s %-4s      %35s : %-4s\n", $ptr,"1","Protocol",$protocol;
+	
+					# TOS Byte
+		
+					$ptr = $flowset_offset + $tos_base;
+					for ($i=0;$i<1;$i++) { $tos .= $packet_bytes[$ptr+$i]; }
+					$tos = hex($tos);
+					printf "      %-4s %-4s      %35s : %-4s\n", $ptr,"1","ToS Byte",$tos;
+	
+					# TCP Flags
+		
+					$ptr = $flowset_offset + $tcp_flags_base;
+					for ($i=0;$i<1;$i++) { $tcp_flags .= $packet_bytes[$ptr+$i]; }
+					$tcp_flags = hex($tcp_flags);
+					printf "      %-4s %-4s      %35s : %-4s\n", $ptr,"1","TCP Flags",$tcp_flags;
+	
+					if (($suspected_version eq "v5") || ($suspected_version eq "v7")) {
+
+						# Source AS
+			
+						$ptr = $flowset_offset + $src_as_base;
+						for ($i=0;$i<2;$i++) { $src_as .= $packet_bytes[$ptr+$i]; }
+						$src_as = hex($src_as);
+						printf "      %-4s %-4s      %35s : %-4s\n", $ptr,"2","Source AS",$src_as;
+		
+						# Dest AS
+			
+						$ptr = $flowset_offset + $dst_as_base;
+						for ($i=0;$i<2;$i++) { $dst_as .= $packet_bytes[$ptr+$i]; }
+						$dst_as = hex($dst_as);
+						printf "      %-4s %-4s      %35s : %-4s\n", $ptr,"2","Dest AS",$dst_as;
+		
+						# Source Mask
+			
+						$ptr = $flowset_offset + $src_mask_base;
+						for ($i=0;$i<1;$i++) { $src_mask .= $packet_bytes[$ptr+$i]; }
+						$src_mask = hex($src_mask);
+						printf "      %-4s %-4s      %35s : %-4s\n", $ptr,"1","Source Mask",$src_mask;
+		
+						# Dest Mask
+			
+						$ptr = $flowset_offset + $dst_mask_base;
+						for ($i=0;$i<1;$i++) { $dst_mask .= $packet_bytes[$ptr+$i]; }
+						$dst_mask = hex($dst_mask);
+						printf "      %-4s %-4s      %35s : %-4s\n", $ptr,"1","Dest Mask",$dst_mask;
+					}
+
+					# Version 7 Specific Fields
+
+					if ($suspected_version eq "v7") {
+
+						# Invalids Flags
+			
+						$ptr = $flowset_offset + $invalids_base;
+						for ($i=0;$i<2;$i++) { $invalids .= $packet_bytes[$ptr+$i]; }
+						$invalids = hex($invalids);
+						printf "      %-4s %-4s      %35s : %-4s\n", $ptr,"2","Invalids Flags",$invalids;
+		
+						# Bypass Router
+			
+						$ptr = $flowset_offset + $bypass_router_base;
+						for ($i=0;$i<4;$i++) { $bypass_router .= $packet_bytes[$ptr+$i]; }
+						$A1 = hex(substr($bypass_router,0,2));
+						$A2 = hex(substr($bypass_router,2,2));
+						$A3 = hex(substr($bypass_router,4,2));
+						$A4 = hex(substr($bypass_router,6,2));
+						$bypass_router = $A1.".".$A2.".".$A3.".".$A4;
+						printf "      %-4s %-4s      %35s : %-4s\n", $ptr,"4","Bypass Router",$bypass_router;
+					}
+				}
+
+				next;
+			}
+
+			# Sequence Number
+
+			for ($i=0;$i<4;$i++) { $sequence_number .= $packet_bytes[$sequence_number_base+$i]; }
+			$sequence_number = hex($sequence_number);
+
+			# Source ID
+
+			for ($i=0;$i<4;$i++) { $source_id .= $packet_bytes[$source_id_base+$i]; }
+			$source_id = hex($source_id);
+
+			print "\nExamining packet: $current_packet. Received: $previous_received. Contains $flowset_records Flowset records. Payload length: $previous_payload_length  Last byte: $last_byte";
+			if ($found_first_template == 0) { print " (No template yet) "; }
+
+			if ($debug >= 0) {
+				print "\n";
+				printf "      %-4s %-4s      %35s : %-4s\n", $netflow_version_base,"2","Netflow Version",$netflow_version;
+				printf "      %-4s %-4s      %35s : %-4s\n", $flowset_records_base,"2","Flowset Record Count",$flowset_records;
+				printf "      %-4s %-4s      %35s : %-4s\n", $sys_uptime_base,"4","System Uptime",$system_uptime;
+				printf "      %-4s %-4s      %35s : %-4s\n", $unix_secs_base,"4","Unix Seconds (converted)",$unix_secs;
+				printf "      %-4s %-4s      %35s : %-4s  %-5s %-15s\n", $sequence_number_base,"4","Sequence Number",$sequence_number,"Last:",$previous_package_seq{$source_id};
+				printf "      %-4s %-4s      %35s : %-4s\n", $source_id_base,"4","Source ID",$source_id;
+			}
+
+			# Decompose each Flowset
+
+			if ($found_first_template) { $total_flows_examined += $flowset_records; }
+
+			for ($next_flowset=0;$next_flowset<$flowset_records;$next_flowset++) {
+
+				$flowset_id            = "";
+				$flowset_length        = "";
+				$template_id           = "";
+				$field_count           = "";
+				$first_data_record     = 1;
+				$first_template_record = 1;
+
+				# Flowset ID 
+	
+				$flowset_id_ptr = $flowset_id_base+$next_flowset_offset; 
+				for ($i=0;$i<2;$i++) { $flowset_id .= $packet_bytes[$flowset_id_ptr+$i]; }
+				$flowset_id = hex($flowset_id);
+	
+				# Flowset Length
+	
+				$flowset_length_ptr = $flowset_length_base+$next_flowset_offset; 
+				for ($i=0;$i<2;$i++) { $flowset_length .= $packet_bytes[$flowset_length_ptr+$i]; }
+				$flowset_length = hex($flowset_length);
+	
+				if ($current_flowset_record >= $flowset_records) { last;}
+
+				# Is this is a template Flowset?
+	
+				if ($flowset_id < 256) {
+
+					$found_first_template = 1;
+					$last_flowset_byte = $flowset_id_ptr + $flowset_length;
+					$field_ptr = $flowset_id_ptr + 4;
+
+					while ($field_ptr < $last_flowset_byte) {
+
+						$template_id = "";
+						$field_count = "";
+
+						# Template ID
+			
+						$template_id_ptr = $field_ptr;
+						for ($i=0;$i<2;$i++) { $template_id .= $packet_bytes[$template_id_ptr+$i]; }
+						$template_id = hex($template_id);
+						$field_ptr += 2;
+						$engine_templates{$source_id} .= $template_id . ":"; 
+			
+						# Field Count
+			
+						$field_count_ptr = $field_ptr;
+						for ($i=0;$i<2;$i++) { $field_count .= $packet_bytes[$field_count_ptr+$i]; }
+						$field_count = hex($field_count);
+						$field_ptr += 2;
+						$relative_offset = $field_ptr;
+
+						$current_template_record = $current_flowset_record + 1;
+						print "    Next Template record ($current_template_record) ... \n";
+
+						if ($first_template_record) { 
+							printf "      %-4s %-4s      %35s : %-4s\n", $flowset_id_ptr,"2","Flowset ID",$flowset_id;
+							printf "      %-4s %-4s      %35s : %-4s\n", $flowset_length_ptr,"2","Flowset Length",$flowset_length;
+							$first_template_record = 0;
+						}
+
+						if ($debug >= 0) {
+							printf "      %-4s %-4s      %35s : %-4s\n", $template_id_ptr,"2","Template ID",$template_id;
+							printf "      %-4s %-4s      %35s : %-4s\n", $field_count_ptr,"2","Field Count",$field_count;
+						}
+		
+						if (($template_field_count{$template_id} ne "") && ($field_count ne $template_field_count{$template_id})) {
+							print "      Warning!!! Field count has changed for Template $template_id.";
+							print " Was: $template_field_count{$template_id}, Now: $field_count\n";
+						}
+
+						$template_field_count{$template_id} = $field_count;
+
+						$current_flowset_record++;
+
+						#  Retrieve the Fields (Type and Length)
+			
+						%{$templates{$template_id}} = ();
+
+						for ($i=0;$i<$field_count;$i++) { 
+		
+							$field_type = "";
+							$field_length = "";
+	
+							$field_number = $i;
+							if (length($field_number) < 2) { $field_number = "0" . $field_number; }
+		
+							for ($j=0;$j<2;$j++) { $field_type .= $packet_bytes[$field_ptr+$j]; }
+							$field_type = hex($field_type);
+							$field_name = $ipfix_element[$field_type];
+							$field_ptr += 2;
+		
+							for ($j=0;$j<2;$j++) { $field_length .= $packet_bytes[$field_ptr+$j]; }
+							$field_length = hex($field_length);
+							$field_ptr += 2;
+		
+							if ($field_name ne "") { 
+								$field_description = $field_type .":". $field_name .":". $field_length;
+								$templates{$template_id}{$field_number} = $field_description;
+							} else {
+								$field_name = "UnknownElement";
+								$field_description = $field_type .":". $field_name .":". $field_length;
+								$templates{$template_id}{$field_number} = $field_description;
+							}
+						}
+	
+						foreach $field_number (sort keys %{$templates{$template_id}}) {
+							$field_description = $templates{$template_id}{$field_number};
+							($field_type,$field_name,$field_length) = split(/:/,$field_description);
+							$field_name = $field_type ."-". $field_name;
+							printf "      %-4s %-s %4s    %35s : %-4s\n", $relative_offset,"4",$field_number,$field_name,$field_length;
+							$relative_offset += 4;
+							if (length($relative_offset) < 2) { $relative_offset = "0" . $relative_offset; }
+						}
+					}
+
+				} else {
+
+					$hex_ipv6 = 0;    # crazy cisco ipv6 storage in packet???
+
+					$template_id = $flowset_id;
+					if ($template_field_count{$template_id} < 1) { if ($debug > 3) { print "No template exists yet for the flowset\n"; } next; }
+
+					$last_flowset_byte = $flowset_id_ptr + $flowset_length;
+					$field_ptr = $flowset_id_ptr + 4;
+
+					while ($field_ptr < $last_flowset_byte) {
+
+						$current_flowset_record++;
+                                                if ($current_flowset_record > $flowset_records) {
+							if (($last_flowset_byte - $field_ptr) > 3 ) {  # accounting for padding
+                                                        	print "    UDP packet has more bytes than number of Flowset records would indicate\n";
+							}
+							last;
+							
+                                                } else {
+                                                        print "    Next data record ($current_flowset_record) using template: $template_id ... \n";
+                                                }
+
+						if (($found_first_template) && ($first_data_record)) { 
+							printf "      %-4s %-4s      %35s : %-4s\n", $flowset_id_ptr,"2","Flowset ID",$flowset_id;
+							printf "      %-4s %-4s      %35s : %-4s\n", $flowset_length_ptr,"2","Flowset Length",$flowset_length;
+							$first_data_record = 0;
+						}
+						$data_record_count{$source_id}{$template_id}++;
+
+						$flowset_id_ptr = $flowset_id_base+$next_ptr; 
+						$flowset_length_ptr = $flowset_length_base+$next_ptr; 
+
+						$number_bytes = $template_field_count{$template_id};
+						for ($field_number=0;$field_number<$number_bytes;$field_number++) {
+	
+							if (length($field_number) < 2) { $field_number = "0" . $field_number; }
+							$field_description = $templates{$template_id}{$field_number};
+							($field_type,$field_name,$field_length) = split(/:/,$field_description);
+	
+							$field_value = "";
+							for ($j=0;$j<$field_length;$j++) { $field_value .= $packet_bytes[$field_ptr+$j]; }
+							if ($field_name =~ "4Address") {
+								$A1 = hex(substr($field_value,0,2));
+								$A2 = hex(substr($field_value,2,2));
+								$A3 = hex(substr($field_value,4,2));
+								$A4 = hex(substr($field_value,6,2));
+								$field_value = $A1.".".$A2.".".$A3.".".$A4;
+							} elsif ($field_name =~ "6Address") {
+								if ($hex_ipv6) {
+									$A1 = hex(substr($field_value,0,2));
+									$A2 = hex(substr($field_value,2,2));
+									$A3 = hex(substr($field_value,4,2));
+									$A4 = hex(substr($field_value,6,2));
+									$A5 = hex(substr($field_value,8,2));
+									$A6 = hex(substr($field_value,10,2));
+									$A7 = hex(substr($field_value,12,2));
+									$A8 = hex(substr($field_value,14,2));
+								} else {
+									$addr_field[0] = substr($field_value,0,4);
+									$addr_field[1] = substr($field_value,4,4);
+									$addr_field[2] = substr($field_value,8,4);
+									$addr_field[3] = substr($field_value,12,4);
+									$addr_field[4] = substr($field_value,16,4);
+									$addr_field[5] = substr($field_value,20,4);
+									$addr_field[6] = substr($field_value,24,4);
+									$addr_field[7] = substr($field_value,28,4);
+								}
+								
+								$field_value = "";
+								$first_zero = 1;
+								for ($j=0;$j<8;$j++) {
+									if ($addr_field[$j] eq "0000") {
+										if ($first_zero) {
+											if ($j == 0) {
+												$field_value = "::";
+											} else {
+												$field_value .= ":";
+											}
+											$first_zero = 0;
+										}
+										if ($addr_field[$j+1] == "0000") { next; }
+									} else {
+										if (substr($addr_field[$j],0,1) eq "0") { $addr_field[$j] = substr($addr_field[$j],1,4); }
+										if (substr($addr_field[$j],0,1) eq "0") { $addr_field[$j] = substr($addr_field[$j],1,4); }
+										if (substr($addr_field[$j],0,1) eq "0") { $addr_field[$j] = substr($addr_field[$j],1,4); }
+										$field_value .= $addr_field[$j] . ":";
+									}
+								}	
+													
+								$field_value = substr($field_value,0,-1);
+
+							} else {
+								$field_value = hex($field_value);
+							}
+	
+							$field_end = $field_ptr + $field_length - 1;
+
+							if ($field_end > $last_byte) {
+								printf "      %-4s %-4s %-47s\n",$field_ptr,$field_length,"*** Warning: Read goes past last byte in packet";
+							} else {
+								printf "      %-4s %-4s %-4s %35s : %-20s\n", $field_ptr,$field_length,$field_number,$field_name,$field_value;
+							}
+	
+							$field_ptr += $field_length;
+						}
+					}
+				}
+
+				$next_flowset_offset += $flowset_length;
+				$next_ptr = $flowset_id_base+$next_flowset_offset; 
+				if ($next_ptr >= $last_byte) { last; }
+			}
+		}
+
+		$first_byte = 0;
+		$packet_bytes = "";
+		next;
+	}
+
+	$count++;
+
+	# Load up the next UDP packet, tcpdump output line by line
+
+	($hex_header,$hex_bytes,$hex_ascii) = split(/  /,$_);
+	$hex_bytes =~ s/\s+//g;
+
+	for ($i=0;$i<16;$i++) {
+		$nibble_number = 2 * $i;
+		$byte_number   = $first_byte + $i;
+		$packet_bytes[$byte_number] = substr($hex_bytes,$nibble_number,2);	
+	}
+
+	$first_byte += 16;
+
+}
+
+($left_part,$right_part) = split(/\./,$first_packet_time);
+($hrs,$mins,$secs) = split(/\:/,$left_part);
+$hundreths = substr($right_part,0,2);
+$first_secs = ($hrs * 3600) + ($mins * 60) + $secs + ($hundreths / 100);
+
+($left_part,$right_part) = split(/\./,$last_packet_time);
+($hrs,$mins,$secs) = split(/\:/,$left_part);
+$hundreths = substr($right_part,0,2);
+$last_secs = ($hrs * 3600) + ($mins * 60) + $secs + ($hundreths / 100);
+
+$elapsed_secs = $last_secs - $first_secs;
+$flow_rate = int($total_flows_examined / $elapsed_secs);
+
+print "\nNetflow stream Analysis Summary\n";
+
+print "\n    Total packets examined: $packet_count\n";
+print "Total flows in all packets: $total_flows_examined\n";
+print "        Captured flow rate: $flow_rate flows per second\n";
+print "  First packet received at: $first_packet_time\n";
+print "   Last packet received at: $last_packet_time\n";
+
+print "\nTemplates exported by Engine:\n";
+foreach $source_id (sort keys %engine_templates) {
+	@eng_templates = split(/:/,$engine_templates{$source_id});
+	$num_templates = $#eng_templates + 1;
+	%seen = (); @uniq = ();
+	foreach $eng_template (@eng_templates) { 
+		unless ($seen{$eng_template}) { $seen{$eng_template} = 1; push(@uniq, $eng_template); }
+	}
+
+	if (length($source_id) == 1) { $source_id_out = "    " . $source_id; }
+	if (length($source_id) == 2) { $source_id_out = "   " . $source_id; }
+	if (length($source_id) == 3) { $source_id_out = "  " . $source_id; }
+	if (length($source_id) == 4) { $source_id_out = " " . $source_id; }
+
+	@uniq = sort @uniq;
+
+	print "Engine: $source_id_out exported $num_templates Template flowsets. Unique Templates received: @uniq\n";
+} 
+
+print "\nData Records exported by Engine, Template:\n";
+foreach $source_id (sort keys %engine_templates) {
+	foreach $template_id (sort keys %{$data_record_count{$source_id}}) {
+
+		if (length($source_id) == 1) { $source_id_out = "    " . $source_id; }
+		if (length($source_id) == 2) { $source_id_out = "   " . $source_id; }
+		if (length($source_id) == 3) { $source_id_out = "  " . $source_id; }
+		if (length($source_id) == 4) { $source_id_out = " " . $source_id; }
+
+		print "Engine: $source_id_out exported (Template $template_id) data records: $data_record_count{$source_id}{$template_id}\n";
+	}
+}
+
+print "\nIndividual Templates:\n";
+foreach $template_id (sort keys %templates) {
+	print "\nTemplate: $template_id contains $template_field_count{$template_id} Fields.\n";
+	$total_length = 0;
+	foreach $field_number (sort keys %{$templates{$template_id}}) {
+		$field_description = $templates{$template_id}{$field_number};
+		($field_type,$field_name,$field_length) = split(/:/,$field_description);
+		$field_name = $field_type ."-". $field_name;
+		printf "%-3s %35s : %-4s\n", $field_number,$field_name,$field_length;
+		$total_length += $field_length;
+	}
+	printf "%-3s %35s : %-4s\n", "","Total Record Length",$total_length;
+}
+
+sub epoch_to_date_gm {
+
+	my ($epoch_date) = @_;
+  
+	($sec,$min,$hr,$date,$mnth,$yr,$day,$yr_date,$DST) = gmtime($epoch_date);  
+	$current_yr_date = $yr_date;  
+	$mnth++;  
+	$yr += 1900;  
+	if ($date<10) {$date = "0" . $date; }  
+	if ($mnth<10) {$mnth = "0" . $mnth; }  
+	if ($hr<10) {$hr = "0" . $hr; }  
+	if ($min<10) {$min = "0" . $min; }  
+	if ($sec<10) {$sec = "0" . $sec; }  
+	$associated_date = $mnth ."\/". $date ."\/". $yr ." ". $hr .":". $min .":". $sec;  
+}

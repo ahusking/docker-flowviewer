@@ -1,0 +1,153 @@
+255 255 255             white
+000 000 000             black
+255 232 208             fv light
+255 224 192             fv background
+191 174 156             fv gray
+166 115 062             fv dark 
+170 199 207             fvcomp light
+121 150 159             fvcomp back
+098 114 119             fvcomp gray
+039 089 103             fvcomp dark
+255 224 224             pale red
+224 255 224             pale green
+255 224 192             pale orange
+216 216 255             pale blue
+255 255 224             pale yellow
+224 255 255             pale turquoise
+243 231 255             pale purple
+229 220 207             pale brown
+235 239 237             pale eos
+251 254 175		pastel yellow
+190 253 172		pastel green
+173 205 254		pastel blue
+244 185 243		pastel rose
+255 173 171		pastel orange
+255 255 102             yellow
+153 102 102             brown
+183 238 237             aqua
+200 192 181             medium brown
+217 225 221             eos green
+160 178 170             npn green
+144 144 224             req blue
+255 192 192             light red
+144 000 000             dark red
+224 144 144             req red
+217 000 000		analysis1
+255 121 000		analysis2
+251 205 000		analysis3
+255 255 006		analysis4
+008 253 000		analysis5
+000 145 068		analysis6
+146 039 143		analysis7
+255 000 255		analysis8
+000 101 176		analysis9
+027 000 081		analysis10
+199 122 106		pie color1
+175 125 100		pie color2
+245 177 116		pie color3
+187 161 100		pie color4
+207 185 172		pie color5
+153 127 094		pie color6
+191 142 102		pie color7
+210 170 118		pie color8
+229 220 187		pie color9
+218 215 200		pie color10
+197 176 147		pie2 color1
+173 162 140		pie2 color2
+211 209 194		pie2 color3
+141 149 168		pie2 color4
+148 174 199		pie2 color5
+153 184 204		pie2 color6
+185 208 180		pie2 color7
+229 206 156		pie2 color8
+213 201 185		pie2 color9
+214 213 209		pie2 color10
+102 034 238             auto mixed1
+051 221 255             auto mixed2
+000 238 068             auto mixed3
+255 255 000             auto mixed4
+255 204 068             auto mixed5
+255 119 000             auto mixed6
+204 034 034             auto mixed7
+100 010 010             auto mixed8
+051 051 255             auto blue1
+051 102 255             auto blue2
+051 136 255             auto blue3
+051 170 255             auto blue4
+051 204 255             auto blue5
+051 238 255             auto blue6
+102 255 255             auto blue7
+102 221 255             auto blue8
+255 000 085             auto red1
+255 034 085             auto red2
+255 068 085             auto red3
+255 085 085             auto red4
+255 102 085             auto red5
+255 136 085             auto red6
+255 170 085             auto red7
+255 204 085             auto red8
+255 238 085             auto red9
+255 255 085             auto red10
+000 085 102             auto green1
+000 119 102             auto green2
+000 153 102             auto green3
+000 187 102             auto green4
+000 221 102             auto green5
+000 255 102             auto green6
+153 238 102             auto green7
+153 204 102             auto green8
+000 000 255             auto violet1
+000 170 255             auto violet2
+000 255 255             auto violet3
+153 170 255             auto violet4
+153 051 255             auto violet5
+204 034 255             auto violet6
+204 170 255             auto violet7
+204 255 255             auto violet8
+000 255 255             auto violet9
+000 221 255             auto violet10
+103 000 031             auto blackred1 
+178 024 043             auto blackred2 
+214 096 077             auto blackred3 
+244 165 130             auto blackred4
+253 219 199             auto blackred5 
+224 224 224             auto blackred6 
+186 186 186             auto blackred7 
+135 135 135             auto blackred8 
+077 077 077             auto blackred9 
+026 026 026             auto blackred10
+084 048 005             auto brownblue1
+140 081 010             auto brownblue2
+191 129 045             auto brownblue3
+223 194 125             auto brownblue4
+246 232 195             auto brownblue5
+199 234 229             auto brownblue6
+128 205 193             auto brownblue7
+053 151 143             auto brownblue8
+001 102 094             auto brownblue9
+000 060 048             auto brownblue10
+127 059 008             auto brownpurp1
+179 088 006             auto brownpurp2
+224 130 020             auto brownpurp3
+253 184 099             auto brownpurp4
+254 224 182             auto brownpurp5
+216 218 235             auto brownpurp6
+178 171 210             auto brownpurp7
+128 115 172             auto brownpurp8
+084 039 136             auto brownpurp9
+045 000 075             auto brownpurp10
+064 000 075             auto purpgreen1
+118 042 131             auto purpgreen2
+153 112 171             auto purpgreen3
+194 165 207             auto purpgreen4
+231 212 232             auto purpgreen5
+217 240 211             auto purpgreen6
+166 219 160             auto purpgreen7
+090 174 097             auto purpgreen8
+027 120 055             auto purpgreen9
+000 068 027             auto purpgreen10
+243 243 243             gray95
+230 230 230             gray90
+103 103 103             gray40
+128 128 128             gray50
+153 153 153             gray60

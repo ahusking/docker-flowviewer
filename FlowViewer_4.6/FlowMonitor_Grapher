@@ -1,0 +1,630 @@
+#! /usr/bin/perl
+#
+#  Purpose:
+#  FlowMonitor_Grapher runs periodically (configurable) to update FlowMonitor 
+#  graphs with the latest data collected by FlowMonitor_Collector.
+#
+#  Description:
+#  The user initiates the script from a command line appending an "&" to put
+#  it in the background. The script re-creates four graphs for each existing 
+#  RRDtool file (i.e., last 24 hours, last 7 days, last month, last year.)
+#  A set of rrdtool parameters, in the FlowViewer_Configuration.pm file,
+#  permits the user to configure parameters like size and color, etc.. When
+#  finished with all of the existing Monitors, the script will update any of
+#  the FlowMonitor Thumbnails on the Dashboard, update the listing for users,
+#  and go to sleep for the remainder of the specified graphing period.
+#
+#  Controlling Parameters (specified in FlowViewer_Configuration.pm):
+#  Name                 Description
+#  -----------------------------------------------------------------------
+#  rrd_area             Color of the area underneath the graph
+#  rrd_line             Color of the line at the top of the graphed area
+#  rrd_width            Width of the graph
+#  rrd_height           Height of the graph
+#  rrd_font             Color of the font used in the graphs
+#  rrd_back             Image background color
+#  rrd_canvas           Color of the background of the actual graph
+#  rrd_grid             Color of the minor grid lines
+#  rrd_mgrid            Color of the major grid lines
+#  rrd_frame            Color of the graph frame
+#  rrd_shadea           Color for the top and left border
+#  rrd_shadeb           Color for the right and bottom border
+#  rrd_thick            Thickness of the line at the top of the graph
+#  rrd_lower_limit      Bottom of the y-axis
+#  rrd_slope_mode       "--slope-mode" will round off tops of graph  
+#  rrd_vrule_color      Color of the line that indicates when the filter was changed
+#
+#  Modification history:
+#  Author       Date            Vers.   Description
+#  -----------------------------------------------------------------------
+#  J. Loiacono  07/04/2006      3.0     Original version.
+#  J. Loiacono  12/25/2006      3.1     Archives, lazy-mode, permissions
+#  J. Loiacono  02/22/2007      3.2     Changes to incorporate Groups
+#  J. Loiacono  12/07/2007      3.3     Alerts, flexible logging,
+#                                       3 years, time-zones
+#  J. Loiacono  01/15/2008      3.3.1   Fixed missing output for named ints
+#  J. Loiacono  04/01/2008      3.3.1   Corrected log number graphs created
+#  J. Loiacono  04/15/2008      3.3.1   Fixed Groups missing x-axis (Wu Lei)
+#  J. Loiacono  05/08/2008      3.3.1   Fixed sleep on Debian problem
+#  J. Loiacono  03/17/2011      3.4     Switched order of Max and 95th on graphs
+#  J. Loiacono  05/08/2012      4.0     Major upgrade for IPFIX/v9 using SiLK,
+#                                       New User Interface
+#  J. Loiacono  07/31/2013      4.2     Restored FlowMonitors of flows, packets
+#  J. Loiacono  09/11/2013      4.2.1   Accomodations for Linear in Collector
+#                                       Mods for international date formatting
+#  J. Loiacono  07/04/2014      4.4     Multiple dashboards
+#  J. Loiacono  11/02/2014      4.5     FlowTracker to FlowMonitor rename
+#  J. Loiacono  01/26/2015      4.6     Timezone from system (not Configuration)
+#
+#$Author$
+#$Date$
+#$Header$
+#
+###########################################################################
+#
+#               BEGIN EXECUTABLE STATEMENTS
+#
+ 
+use FlowViewer_Configuration;
+use FlowViewer_Utilities;
+use lib $cgi_bin_directory;
+
+if (!-e "$monitor_directory") {
+        $mkdir_command = "mkdir $monitor_directory";
+        system($mkdir_command);
+        chmod $html_dir_perms, $monitor_directory;
+}
+
+# Load the colors 
+     
+$colors_file = "$cgi_bin_directory/FlowGrapher_Colors"; 
+     
+open (COLORS,"<$colors_file") || die "Can't open colors file; $colors_file\n"; 
+while (<COLORS>) { 
+        chop;    
+        ($red,$green,$blue,$color_1,$color_2) = split(/\s+/); 
+        $color_name = $color_1; 
+        if ($color_2 ne "") { $color_name = $color_1 . " " . $color_2; } 
+        $R = &dec2hex($red);   if (length($R) < 2) { $R = "0" . $R; }  
+        $G = &dec2hex($green); if (length($G) < 2) { $G = "0" . $G; }  
+        $B = &dec2hex($blue);  if (length($B) < 2) { $B = "0" . $B; }  
+        $hex_colors{$color_name} =  $R . $G . $B; 
+}    
+$hex_colors{"standard"} = $rrd_area; 
+sub dec2hex($) { return sprintf("%lx", $_[0]) } 
+
+open(DATE,"date 2>&1|");   
+while (<DATE>) {  
+	($d_tz,$m_tz,$dt_tz,$t_tz,$time_zone,$y_tz) = split(/\s+/,$_);  
+}        
+
+$a = 0; while ($a == 0) {
+
+	if (($log_grapher_short eq "Y") || ($log_grapher_long eq "Y")) { open (LOG,">>$log_directory/FlowMonitor_Grapher.log"); }
+	if ($debug_monitor eq "Y") { open(DEBUG,">$work_directory/DEBUG_MONITOR_G"); }
+
+	$end_rrd        = time;
+	$num_monitors   = 0;
+	$groups_exist   = 0;
+	$archives_exist = 0;
+	%monitors       = ();
+
+	if (($log_grapher_short eq "Y") || ($log_grapher_long eq "Y") || (debug_grapher eq "Y")) { 
+                $current_time = time;
+                $current_time_out = epoch_to_date($current_time,"LOCAL"); 
+                $current_time_rrd = $current_time_out . " $time_zone"; 
+                $current_time_rrd =~ s/:/\\:/g; 
+
+	        ($sec,$min,$hr,$date,$mnth,$yr,$day,$yr_date,$DST) = localtime(time);
+	        $yr += 1900;
+	        $mnth++;
+		if (length($mnth) < 2) { $mnth = "0" . $mnth; }
+		if (length($hr)   < 2) { $hr   = "0" . $hr; }
+		if (length($min)  < 2) { $min  = "0" . $min; }
+		if (length($sec)  < 2) { $sec  = "0" . $sec; }
+	
+		if    ($date_format eq "DMY")  { $current_date = $date ."/". $mnth ."/". $yr ." ". $hr .":". $min .":". $sec; }
+		elsif ($date_format eq "DMY2") { $current_date = $date .".". $mnth .".". $yr ." ". $hr .":". $min .":". $sec; }
+		elsif ($date_format eq "YMD")  { $current_date = $yr ."-". $mnth ."-". $date ." ". $hr .":". $min .":". $sec; }
+		else                           { $current_date = $mnth ."/". $date ."/". $yr ." ". $hr .":". $min .":". $sec; }
+
+		if (($log_grapher_short eq "Y") || ($log_grapher_long eq "Y")) { print LOG   "Starting a graphing loop at: $current_date\n"; }
+		if ($debug_monitor eq "Y") { print DEBUG "Starting a graphing loop at: $current_date\n"; }
+	}
+
+	# Work through each monitor
+	
+	while ($filter_file = <$filter_directory/*>) {
+	
+		($directory,$monitor) = $filter_file =~ m/(.*\/)(.*)$/;
+		($monitor,$extension) = split(/\./,$monitor);
+	
+		$num_monitors++;
+
+                # Load information from filter file for graph and HTML page re-creation
+      
+		$monitor_type = "";
+		$vrule_1 = "";
+		$vrule_2 = "";
+		$vrule_3 = "";
+		$hrule = "";
+		$alert_threshold = 0;
+
+                open (FILTER,"<$filter_file"); 
+                while (<FILTER>) { 
+                        chop;    
+                        $key = substr($_,0,8); 
+                        if ($key eq " input: ") { 
+                                ($input,$field,$field_value) = split(/: /); 
+
+				if (($field eq "monitor_type") || ($field eq "tracking_type")) { 
+					$monitor_type = $field_value; }
+				if (($field eq "monitor_label") || ($field eq "tracking_label")) { 
+					$monitors{$monitor} = $field_value;
+					$monitor_label = $field_value; }
+				if ($field eq "general_comment") { 
+					$general_comment = $field_value; }
+				if ($field eq "alert_threshold") { 
+					$alert_threshold = $field_value; }
+
+                                if ($field eq "revision") { 
+
+                                        ($notate_graphs,$revision_date,$revision_comment) = split(/\|/,$field_value);  
+                                        $revision_date_out = epoch_to_date($revision_date,"LOCAL"); 
+                                        $revision_date_out =~ s/:/\\:/g;
+
+                                        if ($notate_graphs eq "Y") {   
+						if (($vrule_1 ne "") && ($vrule_2 ne "") && ($vrule_3 ne "")) {
+							$vrule_1 = $vrule_2;
+							$vrule_2 = $vrule_3;
+                                                        $vrule_3 = "VRULE:$revision_date#$rrd_vrule_color:\"$revision_date_out\\: $revision_comment\\n\""; 
+						}
+                                                if ($vrule_1 eq "") { 
+                                                        $vrule_1 = "VRULE:$revision_date#$rrd_vrule_color:\"$revision_date_out\\: $revision_comment\\n\""; 
+                                                        next; }  
+                                                elsif ($vrule_2 eq "") { 
+                                                        $vrule_2 = "VRULE:$revision_date#$rrd_vrule_color:\"$revision_date_out\\: $revision_comment\\n\""; 
+                                                        next; }  
+                                                elsif ($vrule_3 eq "") { 
+                                                        $vrule_3 = "VRULE:$revision_date#$rrd_vrule_color:\"$revision_date_out\\: $revision_comment\\n\""; 
+                                                        next; }  
+                                        } 
+                                }       
+
+				if ($alert_threshold > 0) {
+					$hrule = "    HRULE:$alert_threshold#$rrd_hrule_color";
+				} elsif ($alert_threshold < 0) {
+					$alert_threshold_out = -1 * $alert_threshold;
+					$hrule = "    HRULE:$alert_threshold_out#$rrd_hrule_color";
+				}
+			}
+                }                
+                close (FILTER);
+
+		$monitors{$monitor} .= "^" . $general_comment;
+		
+		# Look to skip Archives
+
+		if ($extension eq "archive") { 
+			$monitors{$monitor} .= "^Archive";
+			$archives_exist = 1;
+			$num_monitors--;
+			next;
+		} elsif ($monitor_type eq "Group") {
+			$monitors{$monitor} .= "^Group";
+			$groups_exist = 1;
+		}
+
+		# Set Vertical label
+
+		if ($monitor_type =~ /fps/) {
+			$vertical_label = "Flows per Second";
+			$type_per_second = "fps";
+		} elsif ($monitor_type =~ /pps/) {
+			$vertical_label = "Packets per Second";
+			$type_per_second = "pps";
+		} else {
+			$vertical_label = "Bits per Second";
+			$type_per_second = "bps";
+		}
+
+		if ($log_grapher_long eq "Y") { print LOG "creating graphs for: $monitor\n"; }
+	
+		# Create each of the four graphs for this monitor
+		
+                $rrdtool_file = "$rrdtool_directory/$monitor" . ".rrd";  
+
+		foreach $graph_type ("Daily", "Weekly", "Monthly", "Yearly", "Three Years") {
+		
+			$x_grid  = "";
+
+			if ($graph_type eq "Daily") {
+				$start_rrd = $end_rrd - 86400;
+                                $line_peak = "",
+				$sample = "     Data collected over 5 minute periods          Graph Last Updated\\: $current_time_rrd";
+				$rrd_title = "\"Last 24 Hours\"";
+				if ($labels_in_titles) { $rrd_title = "\"$monitor_label\: Last 24 Hours\""; }
+				$graph_file = "$monitor_directory/$monitor/daily.png";
+			} elsif ($graph_type eq "Weekly") {
+				$start_rrd = $end_rrd - (7*86400);
+                                $line_peak = "LINE$rrd_thick:flowpeak#$rrd_peak:\"Peak 5 Minute Period\"",
+				$sample = "     Data averaged over 30 minute periods          Graph Last Updated\\: $current_time_rrd";
+				$rrd_title = "\"Last 7 Days\"";
+				if ($labels_in_titles) { $rrd_title = "\"$monitor_label\: Last 7 Days\""; }
+				$graph_file = "$monitor_directory/$monitor/weekly.png";
+			} elsif ($graph_type eq "Monthly") {
+				$start_rrd = $end_rrd - (28*86400);
+                                $line_peak = "LINE$rrd_thick:flowpeak#$rrd_peak:\"Peak 5 Minute Period\"",
+				$sample = "     Data averaged over 2 hour periods             Graph Last Updated\\: $current_time_rrd";
+				$rrd_title = "\"Last 4 Weeks\"";
+				if ($labels_in_titles) { $rrd_title = "\"$monitor_label\: Last 4 Weeks\""; }
+				$graph_file = "$monitor_directory/$monitor/monthly.png";
+			} elsif ($graph_type eq "Yearly") {
+				$start_rrd = $end_rrd - (365*86400);
+                                $line_peak = "LINE$rrd_thick:flowpeak#$rrd_peak:\"Peak 5 Minute Period\"",
+				$sample = "     Data averaged over 24 hour periods            Graph Last Updated\\: $current_time_rrd";
+				$rrd_title = "\"Last 12 Months\"";
+				if ($labels_in_titles) { $rrd_title = "\"$monitor_label\: Last 12 Months\""; }
+				$graph_file = "$monitor_directory/$monitor/yearly.png";
+			} elsif ($graph_type eq "Three Years") {
+				$start_rrd = $end_rrd - (3*365*86400);
+                                $line_peak = "LINE$rrd_thick:flowpeak#$rrd_peak:\"Peak 5 Minute Period\"",
+				$sample = "     Data averaged over 24 hour periods            Graph Last Updated\\: $current_time_rrd";
+				$rrd_title = "\"Last Three Years\"";
+				if ($labels_in_titles) { $rrd_title = "\"$monitor_label\: Last Three Years\""; }
+				$x_grid = "--x-grid MONTH:1:YEAR:1:MONTH:2:2800000:%b";
+				$graph_file = "$monitor_directory/$monitor/threeyears.png";
+			}
+
+			if ($extension eq "grp") {
+
+				$DEF_parameters  = "";
+				$AREA_parameters = "";
+				@components = ();
+
+        			open (GROUP,"<$filter_file"); 
+        			@group_lines = <GROUP>; 
+        			close (GROUP); 
+     
+        			foreach $group_line (@group_lines) { 
+                			if ($group_line =~ / input:/) { next; }
+                			else { push (@components,$group_line); } 
+        			}
+
+				$num_components = 0;
+				$first_below = 1;
+        			foreach $component (@components) { 
+
+				        $num_components++;
+				        chop $component;
+				        ($component_position,$component_label,$component_color) = split(/\^/,$component);
+				 
+					$component_file = $component_label; 
+					$component_file =~ s/^\s+//; 
+					$component_file =~ s/\s+$//; 
+					$component_file =~ s/\&/-/g; 
+					$component_file =~ s/\//-/g; 
+					$component_file =~ s/\(/-/g; 
+					$component_file =~ s/\)/-/g; 
+					$component_file =~ s/\./-/g; 
+					$component_file =~ s/\s+/_/g; 
+					$component_file =~ tr/[A-Z]/[a-z]/;
+					$component_fil  = $filter_directory  ."/". $component_file .".fil";
+					$component_rrd  = $rrdtool_directory ."/". $component_file .".rrd";
+
+					$component_archive  = $rrdtool_directory ."/". $component_file .".archive";
+					if (-e $component_archive) { $component_rrd = $component_archive; }
+			
+			                open (FILTER,"<$component_fil"); 
+			                while (<FILTER>) { 
+			                        chop;    
+			                        $key = substr($_,0,8); 
+			                        if ($key eq " input: ") { 
+			                                ($input,$field,$field_value) = split(/: /); 
+							if (($field eq "monitor_type") || ($field eq "tracking_type")) { $comp_monitor_type = $field_value; last; }
+						}
+					}
+					close (FILTER);
+
+					# Set Vertical label for Group
+			
+					if ($comp_monitor_type =~ /fps/) {
+			                        $vertical_label = "Flows per Second";
+					} elsif ($comp_monitor_type =~ /pps/) {
+			                        $vertical_label = "Packets per Second";
+			                } else {
+			                        $vertical_label = "Bits per Second";
+			                }
+
+				        $DEF_parameters  .= "DEF:flowbits$num_components=$component_rrd:flowbits:AVERAGE ";
+				        $AREA_parameters .= "COMMENT:\"     \" ";
+				 
+				        if ($component_position < 200) {
+				                $AREA_parameters .= "AREA:flowbits$num_components#$hex_colors{$component_color}:\"$component_label\\n\":STACK ";
+				        } elsif (($component_position >= 200) && ($first_below)) {
+				                $DEF_parameters .= "CDEF:flowbits_below$num_components=flowbits$num_components,-1,* ";
+				                $AREA_parameters .= "AREA:flowbits_below$num_components#$hex_colors{$component_color}:\"$component_label\\n\" ";
+				                $first_below = 0;
+				        } else {
+				                $DEF_parameters .= "CDEF:flowbits_below$num_components=flowbits$num_components,-1,* ";
+				                $AREA_parameters .= "AREA:flowbits_below$num_components#$hex_colors{$component_color}:\"$component_label\\n\":STACK ";
+				        }
+				}
+			
+				@graph_parameters =  
+			        ('--title',"$rrd_title",  
+			        '--start',$start_rrd,  
+			        '--end',$end_rrd,  
+			        '--width',$rrd_width,  
+			        '--height',$rrd_height,  
+			        '--interlace',  
+				'--lazy',
+			        '--vertical-label',"\"$vertical_label\"",  
+			        $x_grid,
+			        $rrd_slope_mode,  
+			        "--color=FONT#$rrd_font",  
+			        "--color=BACK#$rrd_back",  
+			        "--color=CANVAS#$rrd_canvas",  
+			        "--color=GRID#$rrd_grid",  
+			        "--color=MGRID#$rrd_mgrid",  
+			        "--color=FRAME#$rrd_frame",  
+			        "--color=SHADEA#$rrd_frame",  
+			        "--color=SHADEB#$rrd_frame",  
+			        '--lower-limit',$rrd_lower_limit,  
+			        $DEF_parameters, 
+                                "COMMENT:\"$sample   \"",
+                                "COMMENT:\" \\n\"",
+			        $AREA_parameters,
+                                "COMMENT:\" \\n\"",
+                                $vrule_1,
+                                $vrule_2,
+                                $vrule_3);
+
+			} else {
+
+                        	@graph_parameters =
+                                ('--title',"$rrd_title",
+                                '--start',$start_rrd,
+                                '--end',$end_rrd,
+                                '--width',$rrd_width,
+                                '--height',$rrd_height,
+                                '--interlace',
+				'--lazy',
+				'--vertical-label',"\"$vertical_label\"",
+			        $x_grid,
+                                $rrd_slope_mode,
+                                "--color=FONT#$rrd_font",
+                                "--color=BACK#$rrd_back",
+                                "--color=CANVAS#$rrd_canvas",
+                                "--color=GRID#$rrd_grid",
+                                "--color=MGRID#$rrd_mgrid",
+                                "--color=FRAME#$rrd_frame",
+                                "--color=SHADEA#$rrd_frame",
+                                "--color=SHADEB#$rrd_frame",
+                                '--lower-limit',$rrd_lower_limit,
+                                "DEF:flowbits=$rrdtool_file:flowbits:AVERAGE",
+                                "DEF:flowpeak=$rrdtool_file:flowbits:MAX",
+                                'VDEF:flowbitsmax=flowbits,MAXIMUM',
+                                'VDEF:flowbitsavg=flowbits,AVERAGE',
+                                'VDEF:flowbitsmin=flowbits,MINIMUM',
+                                'VDEF:flowbitspct=flowbits,95,PERCENT',
+                                "AREA:flowbits#$rrd_area",
+                                "LINE$rrd_thick:flowbits#$rrd_line:",
+                                "COMMENT:\"$sample   \"",
+                                "COMMENT:\" \\n\"",
+                                "COMMENT:\"             Maximum    \"",
+                                "GPRINT:flowbitsmax:\"%6.2lf %S$type_per_second\"",
+                                "COMMENT:\"             \"",
+				$line_peak,
+                                "COMMENT:\" \\n\"",
+                                "COMMENT:\"             95thPct    \"",
+                                "GPRINT:flowbitspct:\"%6.2lf %S$type_per_second \"",
+                                "COMMENT:\" \\n\"",
+                                "COMMENT:\"             Average    \"",
+                                "GPRINT:flowbitsavg:\"%6.2lf %S$type_per_second \"",
+                                "COMMENT:\" \\n\"",
+                                "COMMENT:\"             Minimum    \"",
+                                "GPRINT:flowbitsmin:\"%6.2lf %S$type_per_second \"",
+                                "COMMENT:\"                        [List Values]\\n\"",
+                                "COMMENT:\" \\n\"",
+                                $vrule_1,
+                                $vrule_2,
+                                $vrule_3,
+				$hrule);
+			}
+ 
+                        $rrdgraph_command = "$rrdtool_bin_directory/rrdtool graph " . "$graph_file " . "@graph_parameters " . ">/dev/null";
+			if ($debug_monitor eq "Y") { print DEBUG "\n\n$rrdgraph_command\n\n"; }
+
+                        system($rrdgraph_command);
+
+			chmod $graph_file_perms, $graph_file;
+
+                        if ($debug_monitor eq "Y") { print DEBUG "finished $graph_type for $graph_file\n"; }
+		}
+	}
+
+	# Update Dashboard Thumbnails
+	
+	@all_dashboards = @other_dashboards;
+	unshift(@all_dashboards,$dashboard_directory);
+	
+	$dashboard_entry = -1;
+
+	foreach $dashboard (@all_dashboards) {
+	
+		$dashboard_entry++;
+
+	        @dashboard_files = <$dashboard/*>;
+	        foreach $dashboard_file (@dashboard_files) {
+	
+			($directory,$thumbnail_file) = $dashboard_file =~ m/(.*\/)(.*)$/;
+	
+			($thumbnail_file,$thumbnail_suffix) = split(/\./,$thumbnail_file);
+	
+			$last_underscore = rindex($thumbnail_file,"_");
+			$monitor_label = substr($thumbnail_file,0,$last_underscore);
+			$position = substr($thumbnail_file,$last_underscore+1,1);
+	
+			$last_underscore = rindex($monitor_label,"_");
+			$monitor_label = substr($monitor_label,0,$last_underscore);
+			$graph_type = substr($thumbnail_file,$last_underscore+1,7);
+			($graph_type,$last_underscore) = split(/_/,$graph_type);
+
+			if (@dashboard_titles) {
+				$update_dashboard = $dashboard_titles[$dashboard_entry];
+				$update_dashboard =~ s/ /\~/;
+			} else {
+				$update_dashboard = "Main_Only";
+			}
+	
+			$thumbnail_command = "$cgi_bin_directory/FlowMonitor_Thumbnail $update_dashboard $monitor_label $graph_type $position";
+			system($thumbnail_command);
+		}
+	}
+
+        # Update the Active Monitors HTML file
+
+        $active_monitors_webpage = "$monitor_directory/$actives_webpage";
+        open(MONITORS,">$active_monitors_webpage");
+
+        print MONITORS "<!DOCTYPE html PUBLIC \"-//W3C//DTD HTML 4.01//EN\"\n";
+        print MONITORS "\"http://www.w3.org/TR/html4/strict.dtd\">\n\n";
+        print MONITORS "<html lang=en>\n";
+        print MONITORS "<head>\n";
+        print MONITORS "<meta http-equiv=Content-Type content=\"text/html; charset=utf-8\">\n";
+        print MONITORS "<title>FlowViewer - Maintaining Network Traffic Situational Awareness</title>\n";
+        print MONITORS "<link rel=\"stylesheet\" href=\"$reports_short/FlowViewer.css\" type=\"text/css\">\n";
+        print MONITORS "</head>\n";
+        print MONITORS "<body>\n";
+        print MONITORS "<center>\n";
+        print MONITORS "<br>\n";
+        print MONITORS "\n";
+
+        print MONITORS "<div id=container>\n";
+        print MONITORS " <div id=title_left>\n";
+        print MONITORS "  <a><span class=link16>$left_title</span></a>\n";
+        print MONITORS " </div>\n";
+        print MONITORS " <div id=title_right>\n";
+        print MONITORS "  <a><span class=link16>$right_title</span></a>\n";
+        print MONITORS " </div>\n";
+        print MONITORS " <div id=title_center>\n";
+        print MONITORS "  <a><span class=text20>FlowViewer</span></a>\n";
+        print MONITORS "  <p>\n";
+        print MONITORS "  <a><span class=text12>Powered by flow-tools and SiLK</span></a>\n";
+        print MONITORS " </div>\n";
+        print MONITORS "\n";
+
+        print MONITORS " <div class=gradient_down id=service_top></div>\n";
+        print MONITORS " <div id=content_wide>\n";
+        print MONITORS "  <a><span class=text16>FlowMonitors</span></a>\n";
+
+        @sorted_monitors = sort (keys (%monitors));
+
+        print MONITORS "<table cellspacing=6>\n";
+
+        # Output the Individual Monitors
+
+        print MONITORS "<tr></tr><tr></tr><tr></tr>\n";
+        print MONITORS "<tr><td></td><td align=left><b>Individual Monitors</b></td><td></td><td align=left><b>Description</td></b></tr>\n";
+        print MONITORS "<tr></tr><tr></tr>\n";
+
+        foreach $monitor (@sorted_monitors) {
+                ($monitor_label,$general_comment,$class) = split(/\^/,$monitors{$monitor});
+                if ($class ne "") { next; }
+                if ($debug_monitor eq "Y") { print DEBUG "active monitor: $monitor\n"; }
+                $monitor_link = "<a href=$cgi_bin_short/FlowMonitor_DisplayPublic.cgi?$main_dashboard^filter_hash=MT_$monitor>$monitor_label</option>\n";
+                print MONITORS "<tr>\n";
+                print MONITORS "<td width=200></td>\n";
+                print MONITORS "</td>\n";
+                print MONITORS "<td align=left width=300>\n";
+                print MONITORS "$monitor_link";
+                print MONITORS "</td>\n";
+                print MONITORS "<td width=50></td>\n";
+                print MONITORS "<td align=left>\n";
+                print MONITORS "$general_comment<br>";
+                print MONITORS "</td>\n";
+                print MONITORS "<td width=200></td>\n";
+                print MONITORS "</tr>\n";
+        }
+
+        # Output the Group Monitors
+
+        if ($groups_exist) {
+
+                print MONITORS "<tr></tr><tr></tr><tr></tr>\n";
+                print MONITORS "<tr><td></td><td align=left><b>Group Monitors</b></td><td></td><td align=left><b>Description</td></b></tr>\n";
+                print MONITORS "<tr></tr><tr></tr>\n";
+
+                foreach $monitor (@sorted_monitors) {
+                        ($monitor_label,$general_comment,$class) = split(/\^/,$monitors{$monitor});
+                        if ($class ne "Group") { next; }
+                        if ($debug_monitor eq "Y") { print DEBUG "group monitor: $monitor\n"; }
+                        $monitor_link = "<a href=$cgi_bin_short/FlowMonitor_DisplayPublic.cgi?$main_dashboard^filter_hash=MT_$monitor>$monitor_label</option>\n";
+                        print MONITORS "<tr>\n";
+                        print MONITORS "<td width=200></td>\n";
+                        print MONITORS "<td align=left width=300>\n";
+                        print MONITORS "$monitor_link";
+                        print MONITORS "</td>\n";
+                        print MONITORS "<td width=50></td>\n";
+                        print MONITORS "<td align=left>\n";
+                        print MONITORS "$general_comment<br>";
+                        print MONITORS "</td>\n";
+                        print MONITORS "<td width=200></td>\n";
+                        print MONITORS "</tr>\n";
+                }
+        }
+
+        # Output the Archived Monitors
+
+        if ($archives_exist) {
+
+                print MONITORS "<tr></tr><tr></tr><tr></tr>\n";
+                print MONITORS "<tr><td></td><td align=left><b>Archived Monitors</b></td><td></td><td align=left><b>Description</td></b></tr>\n";
+                print MONITORS "<tr></tr><tr></tr>\n";
+
+                foreach $monitor (@sorted_monitors) {
+                        ($monitor_label,$general_comment,$class) = split(/\^/,$monitors{$monitor});
+                        if ($class ne "Archive") { next; }
+                        if ($debug_monitor eq "Y") { print DEBUG "archived monitor: $monitor\n"; }
+                        $monitor_link = "<a href=$cgi_bin_short/FlowMonitor_DisplayPublic.cgi?$main_dashboard^filter_hash=MT_$monitor>$monitor_label</option>\n";
+                        print MONITORS "<tr>\n";
+                        print MONITORS "<td width=200></td>\n";
+                        print MONITORS "<td align=left width=300>\n";
+                        print MONITORS "$monitor_link";
+                        print MONITORS "</td>\n";
+                        print MONITORS "<td width=50></td>\n";
+                        print MONITORS "<td align=left>\n";
+                        print MONITORS "$general_comment<br>";
+                        print MONITORS "</td>\n";
+                        print MONITORS "<td width=200></td>\n";
+                        print MONITORS "</tr>\n";
+                }
+        }
+
+        print MONITORS "</table>\n";
+        print MONITORS "</div>\n";
+        print MONITORS " <div class=gradient_down id=service_bottom>\n";
+        print MONITORS "</div>\n";
+        print MONITORS "</div>\n";
+        print MONITORS "</body>\n";
+        print MONITORS "</html>\n";
+
+        close(MONITORS);
+
+        chmod $actives_file_perms, $active_monitors_webpage;
+
+	# Update log and go to sleep for what remains of 5-minute period
+
+       	$end_graphing_time = time;
+       	$loop_time = $end_graphing_time - $end_rrd;
+       	$sleep_period = $graphing_period - $loop_time;
+	if ($sleep_period < 1) { $sleep_period = 1; }
+
+       	if (($log_grapher_short eq "Y") || ($log_grapher_long eq "Y")) { print LOG "Finished with this loop. $num_monitors graph sets created. Loop took: $loop_time seconds  sleep_period: $sleep_period\n\n"; }
+
+	close (LOG);
+	close (DEBUG);
+
+       	sleep ($sleep_period);
+}

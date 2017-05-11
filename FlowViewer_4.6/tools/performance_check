@@ -1,0 +1,76 @@
+#! /usr/bin/perl
+#
+# This script will analyze either FlowMonitor_Collector.log or
+# FlowMonitor_Grapher.log files and return statistics. Look
+# especially for FlowMonitor_Collector runs which took more than 
+# 300 seconds (if any.) Our system can do 200 FlowMonitors in
+# an average of 25 seconds.
+#
+# Usage: performance_check <file>
+#
+
+$input_file = $ARGV[0];
+$lowest = 2500;
+$perf = "grep took: $input_file";
+$high_thresh = 120;
+$low_thresh  = 1;
+$print_highs = 0;
+$print_days  = 0; # Set to 1 to subdivide by days
+$print_hours = 0; # Set to 1 to subdivide by days and hours
+
+print "\n";
+open(PERF,"$perf 2>&1|");
+while (<PERF>) {
+	$count++;
+	($first,$seconds_full) = split(/took:/);
+	($seconds,$seconds_full) = split(/seconds/,$seconds_full);
+	if ($seconds == 0)  { $zero_count++; next; }
+	if ($seconds <= $low_thresh)  { $low_count++; next; }
+	if (($seconds > $low_thresh) && ($seconds < $high_thresh)) { $norm_count++; }
+	if ($seconds >= $high_thresh) { $high_count++; if ($print_highs) { print $_; } }
+	if ($seconds < $lowest)  { $lowest  = $seconds; }
+	if ($seconds > $highest) { $highest = $seconds; }
+	$total += $seconds;
+
+	($at,$loop_date,$loop_time,$a,$b,$c,$d,$e,$f,$num_monitors,$g) = split(/\s+/);
+	if ($print_hours) { $loop_date = $loop_date ."_". substr($loop_time,0,2); }
+	if ((($print_days) || ($print_hrs)) && ($current_date ne "") && ($loop_date ne $current_date)) {
+		if ($day_seconds{$current_date} == 0) {
+			print "$current_date had 0 day_seconds\n";
+		} else {
+			$day_monitors_avg = int($day_monitors{$current_date} / $day_loops{$current_date});
+			$day_seconds_avg = $day_seconds{$current_date} / $day_loops{$current_date};
+			$day_loop_avg = int($day_seconds_avg);
+			$day_average = $day_seconds{$current_date} / $day_monitors{$current_date};
+			printf "%10s  Loops: %-3s  Avg Loop Time:%4s  Avg Monitors per loop: %-4s Avg Time per Monitor:%6.2f\n", $current_date,$day_loops{$current_date},$day_loop_avg,$day_monitors_avg,$day_average;
+		}
+	}
+
+	$day_loops{$loop_date}++;
+	$day_monitors{$loop_date} += $num_monitors;
+	$day_seconds{$loop_date} += $seconds;
+	$current_date = $loop_date;
+}
+if (($print_days) || ($print_hrs)) {
+	if ($day_seconds{$current_date} == 0) {
+		print "$current_date had 0 day_seconds\n";
+	} else {
+		$day_monitors_avg = int($day_monitors{$current_date} / $day_loops{$current_date});
+		$day_seconds_avg = $day_seconds{$current_date} / $day_loops{$current_date};
+		$day_loop_avg = int($day_seconds_avg);
+		$day_average = $day_seconds{$current_date} / $day_monitors{$current_date};
+		printf "%10s  Loops: %-3s  Avg Loop Time:%4s  Avg Monitors per loop: %-4s Avg Time per Monitor:%6.2f\n", $current_date,$day_loops{$current_date},$day_loop_avg,$day_monitors_avg,$day_average;
+	}
+}
+
+$average = int($total/($count-$zero_count));
+$lowest = int($lowest);
+$highest = int($highest);
+print "\nLooked at: $count runs\n";
+print "Zero runs: $zero_count\n";
+print " Low runs: $low_count\n";
+print "Norm runs: $norm_count\n";
+print "High runs: $high_count\n";
+print "  Average: $average seconds\n";
+print "   Lowest: $lowest seconds\n";
+print "  Highest: $highest seconds\n";

@@ -1,0 +1,129 @@
+#! /usr/bin/perl
+#
+#  Purpose:
+#  convert_pre40_filters converts existing FlowViewer saved filters
+#  into the new v4.0 format.
+#
+#  Description:
+#
+#  For each existing saved filter, creates a new '.svf' file in the
+#  subdirectory defined in FlowVieweer_Configuration.pm as '$save_directory'.
+#
+#  Input arguments:
+#  Name                 Description
+#  -----------------------------------------------------------------------
+#  ARGV[0]              Full name of old FlowViewer_SavedFilters file      
+#                       E.g., /var/www/cgi-bin/FlowViewer_3.4/FlowViewer_SavedFilters
+#
+#  Modification history:
+#  Author       Date            Vers.   Description
+#  -----------------------------------------------------------------------
+#  J. Loiacono  05/08/2012      4.0     Major upgrade for IPFIX/v9 using SiLK
+#
+#$Author$
+#$Date$
+#$Header$
+#
+###########################################################################
+#
+#               BEGIN EXECUTABLE STATEMENTS
+#
+ 
+use FlowViewer_Configuration;
+use FlowViewer_Utilities;
+
+$original_saved_file = $ARGV[0];
+
+if (!-e "$save_directory") {
+        mkdir($save_directory,$html_dir_perms) || die "cannot mkdir $save_directory: $!";
+        chmod $html_dir_perms, $save_directory;
+}
+
+open(FILTERS,"<$original_saved_file");
+while (<FILTERS>) {
+
+	($filter_hash,$filter_title,$query_string) = split(/\^/);
+
+	($device_name,$source_addresses,$source_ports,$source_ifs,$sif_names,$source_ases,
+	$dest_addresses,$dest_ports,$dest_ifs,$dif_names,$dest_ases,$protocols,
+	$tcp_flags,$tos_fields,$exporter,$nexthop_ips,$sampling_multiplier) = split(/&/,$query_string);
+
+	($label,$device_name)         = split(/=/,$device_name);
+	($label,$source_addresses)    = split(/=/,$source_addresses);
+	($label,$source_ports)        = split(/=/,$source_ports);
+	($label,$source_ifs)          = split(/=/,$source_ifs);
+	($label,$sif_names)           = split(/=/,$sif_names);
+	($label,$source_ases)         = split(/=/,$source_ases);
+	($label,$dest_addresses)      = split(/=/,$dest_addresses);
+	($label,$dest_ports)          = split(/=/,$dest_ports);
+	($label,$dest_ifs)            = split(/=/,$dest_ifs);
+	($label,$dif_names)           = split(/=/,$dif_names);
+	($label,$dest_ases)           = split(/=/,$dest_ases);
+	($label,$protocols)           = split(/=/,$protocols);
+	($label,$tcp_flags)           = split(/=/,$tcp_flags);
+	($label,$tos_fields)          = split(/=/,$tos_fields);
+	($label,$exporter)            = split(/=/,$exporter);
+	($label,$nexthop_ips)         = split(/=/,$nexthop_ips);
+	($label,$sampling_multiplier) = split(/=/,$sampling_multiplier);
+
+	$new_filter_file = $save_directory ."/". $filter_hash . ".svf";
+	open(NEW_FILTER,">$new_filter_file");
+
+        print NEW_FILTER "<!-- BEGIN FILTERING PARAMETERS\n";
+        print NEW_FILTER "filter_hash: $filter_hash\n";
+        print NEW_FILTER "filter_title: $filter_title\n";
+        print NEW_FILTER "device_name: $device_name\n";
+        print NEW_FILTER "start_date:\n";
+        print NEW_FILTER "start_time:\n";
+        print NEW_FILTER "end_date:\n";
+        print NEW_FILTER "end_time:\n";
+        print NEW_FILTER "source_addresses: $source_addresses\n";
+        print NEW_FILTER "source_ports: $source_ports\n";
+        print NEW_FILTER "source_ifs: $source_ifs\n";
+        print NEW_FILTER "sif_names: $sif_names\n";
+        print NEW_FILTER "source_ases: $source_ases\n";
+        print NEW_FILTER "dest_addresses: $dest_addresses\n";
+        print NEW_FILTER "dest_ports: $dest_ports\n";
+        print NEW_FILTER "dest_ifs: $dest_ifs\n";
+        print NEW_FILTER "dif_names: $dif_names\n";
+        print NEW_FILTER "dest_ases: $dest_ases\n";
+        print NEW_FILTER "protocols: $protocols\n";
+        print NEW_FILTER "tcp_flags: $tcp_flags\n";
+        print NEW_FILTER "tos_fields: $tos_fields\n";
+        print NEW_FILTER "exporter: $exporter\n";
+        print NEW_FILTER "nexthop_ips: $nexthop_ips\n";
+        print NEW_FILTER "monitor_type:\n";
+        print NEW_FILTER "monitor_label:\n";
+        print NEW_FILTER "monitor_status:\n";
+        print NEW_FILTER "general_comment:\n";
+        print NEW_FILTER "description:\n";
+        print NEW_FILTER "sampling_multiplier: $sampling_multiplier\n";
+        print NEW_FILTER "stat_report: $stat_report\n";
+        print NEW_FILTER "print_report: $print_report\n";
+        print NEW_FILTER "flow_select: $flow_select\n";
+        print NEW_FILTER "sort_field: $sort_field\n";
+        print NEW_FILTER "pie_charts: $pie_charts\n";
+        print NEW_FILTER "flow_analysis: $flow_analysis\n";
+        print NEW_FILTER "cutoff_lines: $cutoff_lines\n";
+        print NEW_FILTER "cutoff_octets: $cutoff_octets\n";
+        print NEW_FILTER "unit_conversion: $unit_conversion\n";
+        print NEW_FILTER "detail_lines: $detail_lines\n";
+        print NEW_FILTER "bucket_size: $bucket_size\n";
+        print NEW_FILTER "resolve_addresses: $resolve_addresses\n";
+        print NEW_FILTER "graph_multiplier: $graph_multiplier\n";
+        print NEW_FILTER "stats_method: $stats_method\n";
+        print NEW_FILTER "graph_type: $graph_type\n";
+        print NEW_FILTER "alert_threshold: $alert_threshold\n";
+        print NEW_FILTER "alert_frequency: $alert_frequency\n";
+        print NEW_FILTER "alert_destination: $alert_destination\n";
+        print NEW_FILTER "alert_last_notified: $alert_last_notified\n";
+        print NEW_FILTER "alert_consecutive: $alert_consecutive\n";
+        print NEW_FILTER "IPFIX: $IPFIX\n";
+        print NEW_FILTER "silk_field: $silk_field\n";
+        print NEW_FILTER "silk_other: $silk_other\n";
+        print NEW_FILTER "END FILTERING PARAMETERS -->\n";
+
+	chmod $filter_file_perms, $new_filter_file;
+}
+
+print "New filter files were created from file: $original_saved_file into directory: $save_directory\n";

@@ -1,0 +1,1219 @@
+#! /usr/bin/perl
+#
+#  Purpose:
+#  FlowMonitor_Collector runs periodically to collect 5-minute values of
+#  netflow data, according to the specified monitor filter.
+#
+#  Description:
+#  FlowMonitor_Collector is used to collect 5-minute periods of netflow
+#  data which is stored by flow-tools. The script is initiated by the user
+#  from a command line, appending an '&' to keep it in the background. For 
+#  each Monitor set created by the user and represented by a filter file 
+#  in the FlowMonitor_Filter directory, FlowMonitor_Collector extracts the
+#  last 5 minutes worth of data flows that match against the filter. The
+#  resulting value is stored into the appropriate RRDtool data base.
+#  FlowMonitor_Collector will collect netflow totals according to the pre-
+#  defined filters. It will collect this data for 5-minute periods that fall
+#  on even 5-minute boundaries (e.g., 00:05, 00:10, 00:15, etc.) despite 
+#  when it is actually started. It collects data from approximately 30 
+#  minutes previous to allow for long flows to be exported into flow-tools.
+#  When it is started up, FlowMonitor_Collector will check for the last 
+#  collect period, and if enough time has not passed, it will go to sleep
+#  so that it does not collect twice for the same period.
+#
+#  Input arguments:
+#  Name                 Description
+#  -----------------------------------------------------------------------
+#  collection_period    Determines the length between collections (e.g., 5 min.)
+#  
+#  Input files:
+#  Name                 Description
+#  -----------------------------------------------------------------------
+#  Filter file          Used to control the extraction of netflow data
+#  RRDtool file         This is the RRDtool file created for this monitor
+#
+#  Modification history:
+#  Author       Date            Vers.   Description
+#  -----------------------------------------------------------------------
+#  J. Loiacono  07/04/2006      3.0     Original version.
+#  J. Loiacono  12/25/2006      3.1     Skip Archived monitors, log error
+#  J. Loiacono  02/22/2007      3.2     Now uses single concatenation per device
+#  J. Loiacono  12/07/2007      3.3     Alerts, flexible logging
+#  J. Loiacono  12/15/2007      3.3.1   Fixed exporter use of concats
+#  J. Loiacono  04/01/2008      3.3.1   Fixed no_device_exporter use of concats
+#  J. Loiacono  05/08/2008      3.3.1   Fixed month crossover problem
+#  J. Loiacono  05/08/2008      3.3.1   Fixed sleep on Debian problem
+#  J. Loiacono  03/17/2011      3.4     Extend collection period for long flows
+#  J. Loiacono  05/08/2012      4.0     Major upgrade for IPFIX/v9 using SiLK
+#  J. Loiacono  04/15/2013      4.1     Fixed errors for SiLK processing of proto-
+#                                       cols, tcp_flags, tos_fields (C. Spitzlay)
+#  J. Loiacono  07/14/2013      4.2     Introduced pre-filtering for SiLK speed-up
+#  J. Loiacono  07/31/2013      4.2     Restored FlowMonitors of flows, packets
+#  J. Loiacono  09/11/2013      4.2.1   Introduced Linear for flow-tools runs
+#                                       Made use or prefilters non-optional
+#                                       Fixed SiLK monitor for flows and packets
+#  J. Loiacono  09/28/2013      4.2.2   Added time-checks moved concat parameters
+#  J. Loiacono  07/04/2014      4.4     Multiple dashboards. Fixed SiLK --active
+#  J. Loiacono  11/02/2014      4.5     FlowTracker to FlowMonitor rename
+#                                       Flows Initiated and Active processing
+#                                       SiLK local timezone fix
+#                                       Use of $site_config_file on SiLK commands
+#  J. Loiacono  04/06/2015      4.6     no_devices fix (Thanks Vladimir Stepanov)
+#
+#$Author$
+#$Date$
+#$Header$
+#
+###########################################################################
+#
+#               BEGIN EXECUTABLE STATEMENTS
+#
+ 
+use FlowViewer_Configuration; 
+use FlowViewer_Utilities; 
+use lib $cgi_bin_directory; 
+use File::stat;
+
+$just_started_up = 1;
+
+if (!-e "$work_directory") {  
+        $mkdir_command = "mkdir $work_directory"; 
+        system($mkdir_command); 
+        chmod $work_dir_perms, $work_directory; 
+}
+
+$alive = 1; while ($alive) {
+
+	if (($log_collector_short eq "Y") || ($log_collector_med eq "Y") || ($log_collector_long eq "Y")) {
+		open (LOG,">>$log_directory/FlowMonitor_Collector.log"); 
+	}
+	if ($debug_monitor eq "Y") { open (DEBUG,">$work_directory/DEBUG_MONITOR_C"); }
+
+	($sec,$min,$hr,$date,$mnth,$yr,$day,$yr_date,$DST) = localtime(time);
+	$yr += 1900;
+	$mnth++;
+	if (length($mnth) < 2) { $mnth = "0" . $mnth; }
+	if (length($date) < 2) { $date = "0" . $date; }
+	if (length($hr)   < 2) { $hr   = "0" . $hr; }
+	if (length($min)  < 2) { $min  = "0" . $min; }
+	if (length($sec)  < 2) { $sec  = "0" . $sec; }
+	
+	if    ($date_format eq "DMY")  { $current_date = $date ."/". $mnth ."/". $yr ." ". $hr .":". $min .":". $sec; }
+	elsif ($date_format eq "DMY2") { $current_date = $date .".". $mnth .".". $yr ." ". $hr .":". $min .":". $sec; }
+	elsif ($date_format eq "YMD")  { $current_date = $yr ."-". $mnth ."-". $date ." ". $hr .":". $min .":". $sec; }
+	else                           { $current_date = $mnth ."/". $date ."/". $yr ." ". $hr .":". $min .":". $sec; }
+	
+	# Calculate period start and end times for the next period
+
+	$start_collect_time = time;
+	$seconds_past_period = $start_collect_time % $collection_period;
+	$period_end   = $start_collect_time - $collection_offset - $seconds_past_period;
+	$period_start = $period_end - $collection_period;
+	
+	if (($log_collector_short eq "Y") || ($log_collector_med eq "Y") || ($log_collector_long eq "Y")) {
+		print LOG "\nAt $current_date started next collection.  Period: $period_start to $period_end\n";
+	}
+
+	# If using SiLK, calculate period start and end times and put in SiLK format
+
+	if (@ipfix_devices != ()) {
+
+		if ($silk_compiled_localtime eq "Y") {
+			($sec,$min,$hr,$date,$mnth,$yr,$day,$yr_date,$DST) = localtime($period_start);
+			$period_start_epoch = timelocal(localtime($period_start));
+		} else {
+			($sec,$min,$hr,$date,$mnth,$yr,$day,$yr_date,$DST) = gmtime($period_start);
+			$period_start_epoch = timegm(gmtime($period_start));
+		}
+		$yr += 1900;
+		$mnth++;
+		if (length($mnth) < 2) { $mnth = "0" . $mnth; }
+		if (length($date) < 2) { $date = "0" . $date; }
+		if (length($hr)   < 2) { $hr   = "0" . $hr; }
+		if (length($min)  < 2) { $min  = "0" . $min; }
+		$period_start_md = $mnth . $date;
+		$start_secs = 3600*$hr + 60*$min + $sec;
+	        $check_md = $period_start_md;
+		$silk_period_start = $yr ."/". $mnth ."/". $date .":". $hr .":". $min .":00";
+		
+		if ($silk_compiled_localtime eq "Y") {
+			($sec,$min,$hr,$date,$mnth,$yr,$day,$yr_date,$DST) = localtime($period_end);
+			$period_end_epoch = timelocal(localtime($period_end));
+		} else {
+			($sec,$min,$hr,$date,$mnth,$yr,$day,$yr_date,$DST) = gmtime($period_end);
+			$period_end_epoch = timegm(gmtime($period_end));
+		}
+		$yr += 1900;
+		$mnth++;
+		if (length($mnth) < 2) { $mnth = "0" . $mnth; }
+		if (length($date) < 2) { $date = "0" . $date; }
+		if (length($hr)   < 2) { $hr   = "0" . $hr; }
+		if (length($min)  < 2) { $min  = "0" . $min; }
+		$period_end_md = $mnth . $date;
+		$end_secs = 3600*$hr + 60*$min + $sec;
+		$silk_period_end = $yr ."/". $mnth ."/". $date .":". $hr .":". $min .":00";
+		
+		# Calculate SiLK concatenation start and end dates
+	
+		$silk_start_epoch = $period_start - $silk_capture_buffer_pre;
+		$silk_end_epoch   = $period_end   + $silk_capture_buffer_post;
+	
+		if ($silk_compiled_localtime eq "Y") {
+			($sec,$min,$hr,$date,$mnth,$yr,$day,$yr_date,$DST) = localtime($silk_start_epoch);
+		} else {
+			($sec,$min,$hr,$date,$mnth,$yr,$day,$yr_date,$DST) = gmtime($silk_start_epoch);
+		}
+		$yr += 1900;
+		$mnth++;
+		if (length($mnth) < 2) { $mnth = "0" . $mnth; }
+		if (length($date) < 2) { $date = "0" . $date; }
+		if (length($hr)   < 2) { $hr   = "0" . $hr; }
+		$silk_cat_start = $yr ."/". $mnth ."/". $date .":". $hr;
+		
+		if ($silk_compiled_localtime eq "Y") {
+			($sec,$min,$hr,$date,$mnth,$yr,$day,$yr_date,$DST) = localtime($silk_end_epoch);
+		} else {
+			($sec,$min,$hr,$date,$mnth,$yr,$day,$yr_date,$DST) = gmtime($silk_end_epoch);
+		}
+		$yr += 1900;
+		$mnth++;
+		if (length($mnth) < 2) { $mnth = "0" . $mnth; }
+		if (length($date) < 2) { $date = "0" . $date; }
+		if (length($hr)   < 2) { $hr   = "0" . $hr; }
+		$silk_cat_end = $yr ."/". $mnth ."/". $date .":". $hr;
+
+		if ($log_collector_long eq "Y") { 
+			print LOG "\n  Starting next collection loop: $current_date\n";
+			print LOG "        Collection period start: $silk_period_start\n";
+			print LOG "          Collection period end: $silk_period_end\n";
+			print LOG "                Silk start date: $silk_cat_start\n";
+			print LOG "                  Silk end date: $silk_cat_end\n";
+		}
+
+		# Set up site_config_modifier if user has specified the site-config-file
+
+		if ($site_config_file ne "") { $site_config_modifier = "--site-config-file=$site_config_file "; }
+	}
+	
+	# If using flow-tools, calculate period start and end times and put in flow-tools format
+
+	if ((@devices != ()) || ($no_devices_or_exporters == "Y")) {
+
+		$start_epoch = timelocal(localtime($period_start));
+		$end_epoch   = timelocal(localtime($period_end));
+		
+		$start_flows = &flow_date_time($start_epoch,"LOCAL");
+		$end_flows   = &flow_date_time($end_epoch,"LOCAL");
+		
+		($date_hr,$min,$sec) = split(/:/,$start_flows);
+		$start_flows = $date_hr .":". $min .":00";
+		
+		($date_hr,$min,$sec) = split(/:/,$end_flows);
+		$end_flows   = $date_hr .":". $min .":00";
+		
+		# Set up start and end time for concatenating flow-tools data files
+	
+		$cat_start_epoch = $start_epoch - $flow_file_length - 61;
+		$cat_end_epoch   = $start_collect_time;
+		$cat_start       = epoch_to_date($cat_start_epoch,"LOCAL");
+		$cat_end         = epoch_to_date($cat_end_epoch,"LOCAL");
+		
+		($cat_start_date,$cat_start_time)   = split(/ /,$cat_start);
+		($start_month,$start_day,$start_yr) = split(/\//,$cat_start_date);
+		($cat_end_date,$cat_end_time)       = split(/ /,$cat_end);
+		($end_month,$end_day,$end_yr)       = split(/\//,$cat_end_date);
+
+		if ($log_collector_long eq "Y") { 
+			print LOG "\n  Starting next collection loop: $current_date\n";
+			print LOG "        Collection period start: $start_flows\n";
+			print LOG "          Collection period end: $end_flows\n";
+			print LOG "        flow-tools concat start: $cat_start_date $cat_start_time\n";
+			print LOG "          flow-tools concat end: $cat_end_date $cat_end_time\n\n";
+		}
+	}
+
+	# For this time period, go through each monitor 
+
+	$num_monitors    = 0;
+	$num_zero         = 0;
+	$num_non_zero     = 0;
+	$num_ipfix        = 0;
+	$num_flows_active = 0;
+	$num_linear       = 0;
+	%created_concat   = ();
+
+	while ($existing_filter = <$filter_directory/*>) {
+		
+		if ($debug_monitor eq "Y") { time_check("start next_filter"); }
+
+		$alert_threshold = 0;
+		$alert_frequency = "";
+		$alert_destination = "";
+		$alert_consectutive = "";
+
+		$silk_rootdir = "";
+		$silk_class = "";
+		$silk_flowtype = "";
+		$silk_type = "";
+		$silk_sensors = "";
+		$silk_switches = "";
+
+		# Determine if this is an IPFIX device
+
+		$IPFIX = 0;
+	        $grep_command = "grep device_name: $existing_filter";
+	        open(GREP,"$grep_command 2>&1|");
+	        while (<GREP>) {
+	                chop;
+	                ($field_name,$device_name) = split(/name: /);
+			# Determine if we are looking at an IPFIX device
+			foreach $ipfix_device (@ipfix_devices) {
+	       			if ($device_name eq $ipfix_device) { 
+					$IPFIX = 1;
+					$FORM{'device_name'} = $device_name;
+				}
+			}
+	        }
+		close(GREP);
+
+		if ($debug_monitor eq "Y") { print DEBUG "\n$existing_filter\n"; }
+
+		$filter_suffix = $existing_filter;
+	        $filter_suffix =~ s#.*/##; 
+		($monitor_file,$suffix) = split(/\./,$filter_suffix);
+
+		if ($suffix eq "archive") { next; }
+		if ($suffix eq "grp")     { next; }
+
+		$rrdtool_file   = "$rrdtool_directory/$monitor_file.rrd";
+
+		# If this is a quick restart (within collection period), avoid trying to update an existing period
+
+		if ($just_started_up) {
+			open (INFO,">$work_directory/FlowMonitor_Collector_info");
+			$rrd_info_command = "$rrdtool_bin_directory/rrdtool info $rrdtool_file > $work_directory/FlowMonitor_Collector_info";
+			system($rrd_info_command);
+			open (INFO,"<$work_directory/FlowMonitor_Collector_info");
+			while (<INFO>) {
+				chop;
+				$lead = substr($_,0,11);
+				if ($lead eq "last_update") { 
+					($lead,$last_update) = split(/ = /);
+					if ($period_end <= $last_update) {
+						$skip = 1;
+						if (($log_collector_short eq "Y") || ($log_collector_med eq "Y") || ($log_collector_long eq "Y")) { 
+							print LOG "Just starting (and skipping) for: $monitor_file\n"; 
+						}
+						last;
+					}
+				}
+			}
+			close (INFO);
+		}
+		if ($skip) { $skip = 0; next; }
+
+		$num_monitors++;
+		$sampling_multiplier = "";
+
+		$LEGACY_SILK = 0;
+		$LEGACY_v44  = 0;
+		$IPFIX_BLANK = 0;
+		$IPFIX_FOUND = 0;
+
+		# Extract information for this monitor and modify flow-tools filter for this time period
+
+		if (!$IPFIX) { open (FILTER,">$work_directory/FlowMonitor_Collector_filter"); }
+
+		open (EXISTING,"<$existing_filter");
+		while (<EXISTING>) {
+			chop;
+			$key = substr($_,0,8);
+                	if ($key eq " input: ") {
+                        	($input,$field,$field_value) = split(/: /);
+				if (substr($field,-1,1) eq ":") { chop $field; }
+                        	if ($field eq "exporter") { 
+					$exporter = $field_value;
+					if ($IPFIX) { $FORM{'exporter'} = $exporter; } }
+                        	elsif (($field eq "monitor_label") || ($field eq "tracking_label")) { 
+					$monitor_label = $field_value; }
+	                        elsif (($field eq "monitor_type") || ($field eq "tracking_type")) {
+					if    ($field_value eq "Individual")              { $monitor_type = "bps"; }
+					elsif ($field_value eq "Individual-bps")          { $monitor_type = "bps"; }
+					elsif ($field_value eq "Individual-bps-prorated") { $monitor_type = "bps"; }
+					elsif ($field_value eq "Individual-pps")          { $monitor_type = "pps"; }
+					elsif ($field_value eq "Individual-pps-prorated") { $monitor_type = "pps"; }
+					elsif ($field_value eq "Individual-fps")          { $monitor_type = "fpsi"; }
+					elsif ($field_value eq "Individual-fps-prorated") { $monitor_type = "fpsa"; }
+					else { $monitor_type = $field_value; }
+					$FLOWS_ACTIVE = 0; if ($monitor_type eq "fpsa") { $FLOWS_ACTIVE = 1; } }
+                        	elsif ($field eq "sampling_multiplier") { 
+					$sampling_multiplier = $field_value; }
+                        	elsif ($field eq "alert_threshold") { 
+					$alert_threshold = $field_value; }
+                        	elsif ($field eq "alert_frequency") { 
+					$alert_frequency = $field_value; }
+                        	elsif ($field eq "alert_destination") { 
+					$alert_destination = $field_value; }
+                        	elsif ($field eq "alert_last_notified") { 
+					$alert_last_notified = $field_value; }
+                        	elsif ($field eq "alert_consecutive") { 
+					$alert_consecutive = $field_value; }
+
+				# Pick up filtering fields for IPFIX
+
+				elsif ($field eq "source_addresses") {
+					$FORM{'source_address'} = $field_value; }
+				elsif ($field eq "source_ports") {
+					$FORM{'source_port'} = $field_value; }
+				elsif ($field eq "source_ifs") {
+					$FORM{'source_if'} = $field_value; }
+				elsif ($field eq "sif_names") {
+					$FORM{'sif_name'} = $field_value; }
+				elsif ($field eq "source_ases") {
+					$FORM{'source_as'} = $field_value; }
+				elsif ($field eq "dest_addresses") {
+					$FORM{'dest_address'} = $field_value; }
+				elsif ($field eq "dest_ports") {
+					$FORM{'dest_port'} = $field_value; }
+				elsif ($field eq "dest_ifs") {
+					$FORM{'dest_if'} = $field_value; }
+				elsif ($field eq "dif_names") {
+					$FORM{'dif_name'} = $field_value; }
+				elsif ($field eq "dest_ases") {
+					$FORM{'dest_as'} = $field_value; }
+				elsif ($field eq "protocols") {
+					$FORM{'protocols'} = $field_value; }
+				elsif ($field eq "tos_fields") {
+					$FORM{'tos_fields'} = $field_value; }
+				elsif ($field eq "tcp_flags") {
+					$FORM{'tcp_flags'} = $field_value; }
+				elsif ($field eq "nexthop_ips") {
+					$FORM{'nexthop_ip'} = $field_value; }
+				elsif ($field eq "IPFIX") {
+					if ($field_value ne "1") { $IPFIX_BLANK = 1; }
+					$IPFIX_FOUND = 1; }
+				elsif ($field eq "silk_field") {
+					$LEGACY_SILK = 1;
+					$silk_field = $field_value; 
+					if ($silk_field > 0) {
+						# For legacy use of "silk_field", convert to silk_type
+						if (substr($silk_field,1,1) eq "1") { $silk_type = "in,"; }
+						if (substr($silk_field,2,1) eq "1") { $silk_type .= "out,"; }
+						if (substr($silk_field,3,1) eq "1") { $silk_type .= "inweb,"; }
+						if (substr($silk_field,4,1) eq "1") { $silk_type .= "outweb,"; }
+						if (substr($silk_field,5,1) eq "1") { $silk_type .= "int2int,"; }
+						if (substr($silk_field,6,1) eq "1") { $silk_type .= "ext2ext,"; }
+						if (substr($silk_type,-1,1) eq ",") { $silk_type = substr($silk_type,0,-1); }
+					} }
+				elsif ($field eq "silk_other") {
+					$silk_other = $field_value;
+					# For legacy use of "silk_other", convert to silk_type
+					if ($silk_other ne "") { $silk_type = $silk_other; } }
+				elsif ($field eq "silk_rootdir") {
+					$LEGACY_v44 = 1;
+					$silk_rootdir = $field_value; }
+				elsif ($field eq "silk_class") {
+					$silk_class = $field_value; }
+				elsif ($field eq "silk_flowtype") {
+					$silk_flowtype = $field_value; }
+				elsif ($field eq "silk_type") {
+					$silk_type = $field_value; }
+				elsif ($field eq "silk_sensors") {
+					$silk_sensors = $field_value; }
+				elsif ($field eq "silk_switches") {
+					$silk_switches = $field_value; }
+
+				else { next; }
+			}
+			elsif (/permit ge January 1, 2000 00:00:00/) {
+				if (!$IPFIX) { print FILTER "  permit ge $start_flows\n"; } }
+			elsif (/permit lt January 1, 2000 00:00:00/) {
+				if (!$IPFIX) { print FILTER "  permit lt $end_flows\n"; } }
+			else {
+				if (!$IPFIX) { print FILTER "$_\n"; }
+				next;
+			}
+		}
+		close (EXISTING);
+		if (!$IPFIX) { close(FILTER); }
+
+		if (($LEGACY_SILK) || (($IPFIX) && ($IPFIX_BLANK)) || (($IPFIX) && (!$IPFIX_FOUND))) { &fix_legacy_silk; }
+
+		if ($IPFIX) {
+
+                	if ($debug_monitor eq "Y") { time_check("start SiLK_processing"); }
+
+			# Set up SiLK selection
+
+			$selection_switches = "";
+			if ($silk_rootdir ne "")   { $selection_switches  = "--data-rootdir=$silk_rootdir "; }
+			if ($silk_class ne "")     { $selection_switches .= "--class=$silk_class "; }
+			if ($silk_flowtype ne "")  { $selection_switches .= "--flowtype=$silk_flowtype "; }
+			if ($silk_type ne "")      { $selection_switches .= "--type=$silk_type "; }
+			if ($silk_sensors ne "")   { $selection_switches .= "--sensors=$silk_sensors "; }
+			if ($silk_switches ne "")  { $selection_switches .= "$silk_switches "; }
+
+		        # Prepare rwfilter start and end time parameters
+		
+			$time_window = $silk_period_start ."-". $silk_period_end;
+		
+			$selection_switches .= "--start-date=$silk_cat_start --end-date=$silk_cat_end --active=$time_window ";
+
+		        # Prepare source and destination IP address parameters
+		
+		        create_ipfix_filter(%FORM);
+
+		        # Prepare rwfilter and rwcount commands
+		
+			$silk_suffix = $silk_class . $silk_flowtype . $silk_type . $silk_sensors;
+			if ($silk_suffix ne "") { $silk_suffix = "_" . $silk_suffix; }
+			$silk_suffix =~ s/ //g;
+			$silk_suffix =~ s/,//g;
+			$prefiltered_suffix = $device_name . $silk_suffix;
+			$prefiltered_file = "$work_directory/FlowMonitor_Prefiltered_$prefiltered_suffix";
+
+			if (!-e $prefiltered_file) {
+				$rwfilter_command = "$silk_bin_directory/rwfilter $site_config_modifier $selection_switches --pass=$prefiltered_file";
+			        if ($debug_monitor eq "Y") { print DEBUG "rwfilter_command: $rwfilter_command\n"; }
+			        system ($rwfilter_command);
+			}
+
+		        $rwfilter_command = "$silk_bin_directory/rwfilter $site_config_modifier $partitioning_switches --pass=stdout $prefiltered_file";
+
+		        if (($monitor_type eq "bps") || ($monitor_type eq "pps")) {
+		                $rwcount_command = "$silk_bin_directory/rwcount $site_config_modifier --bin-size=$collection_period --start-time=$silk_period_start --end-time=$silk_period_end --epoch-slots --no-titles";
+	                	$silk_command    = "$rwfilter_command | $rwcount_command > $work_directory/FlowMonitor_Collector_output";
+		        } elsif ($monitor_type eq "fpsi") {
+		                $rwcount_command = "$silk_bin_directory/rwcount $site_config_modifier --bin-size=$collection_period --start-time=$silk_period_start --end-time=$silk_period_end --epoch-slots --load-scheme=$silk_init_loadscheme --no-titles";
+	                	$silk_command    = "$rwfilter_command | $rwcount_command > $work_directory/FlowMonitor_Collector_output";
+			} elsif ($monitor_type eq "fpsa") {
+			        $field_sequence  = "22,23,10,13,1,3,14,2,4,5,8,6,7";
+			        $rwcut_command   = "$silk_bin_directory/rwcut $site_config_modifier --fields=$field_sequence";
+			        $silk_command    = "$rwfilter_command | $rwcut_command > $work_directory/FlowMonitor_Collector_output";
+			}
+
+		        if ($debug_monitor eq "Y") { print DEBUG "silk_command: $silk_command\n"; }
+		        system ($silk_command);
+			
+			if ($debug_monitor eq "Y") { time_check("end SiLK_processing"); }
+	
+		} else {
+
+			if ($debug_monitor eq "Y") { time_check("start flowtools_processing"); }
+
+			$concatenate_parameters = "-a -t \"$cat_start\" -T \"$cat_end\" ";
+	 
+			if ($start_day ne $end_day) {
+	
+			        for ($i=0;$i<31;$i++) {
+			                if (($cat_start_epoch + $i*86400) > $cat_end_epoch + 86400) { last; }
+			                ($sec,$min,$hr,$cat_date,$cat_mnth,$cat_yr,$day,$yr_date,$DST) = localtime($cat_start_epoch + $i*86400);
+			                $cat_mnth++;
+			                $cat_yr += 1900;
+			                if ((0 < $cat_mnth) && ($cat_mnth < 10)) { $cat_mnth = "0" . $cat_mnth; }
+			                if ((0 < $cat_date) && ($cat_date < 10)) { $cat_date = "0" . $cat_date; }
+			 
+	                		if ($exporter ne "") { 
+	                        		$cat_directory = "$exporter_directory"; 
+	                		} else { 
+	                        		$cat_directory = "$flow_data_directory/$device_name"; 
+	                		}
+			               
+			                if ($N == -3) { $cat_directory .= "/$cat_yr/$cat_yr\-$cat_mnth/$cat_yr\-$cat_mnth\-$cat_date"; }
+			                if ($N == -2) { $cat_directory .= "/$cat_yr\-$cat_mnth/$cat_yr\-$cat_mnth\-$cat_date"; }
+			                if ($N == -1) { $cat_directory .= "/$cat_yr\-$cat_mnth\-$cat_date"; }
+			                if ($N == 1)  { $cat_directory .= "/$cat_yr"; }
+			                if ($N == 2)  { $cat_directory .= "/$cat_yr/$cat_yr\-$cat_mnth"; }
+			                if ($N == 3)  { $cat_directory .= "/$cat_yr/$cat_yr\-$cat_mnth/$cat_yr\-$cat_mnth\-$cat_date"; }
+			 
+			                $concatenate_parameters .= "$cat_directory ";
+			        }
+	
+			} else {
+			 
+			        ($sec,$min,$hr,$cat_date,$cat_mnth,$cat_yr,$day,$yr_date,$DST) = localtime($cat_end_epoch);
+			        $cat_mnth++;
+			        $cat_yr += 1900;
+			        if ((0 < $cat_mnth) && ($cat_mnth < 10)) { $cat_mnth = "0" . $cat_mnth; }
+			        if ((0 < $cat_date) && ($cat_date < 10)) { $cat_date = "0" . $cat_date; }
+			 
+	                	if ($exporter ne "") { 
+	                        	$cat_directory = "$exporter_directory"; 
+	                	} else { 
+	                        	$cat_directory = "$flow_data_directory/$device_name"; 
+	                	}
+	
+			        if ($N == -3) { $cat_directory .= "/$cat_yr/$cat_yr\-$cat_mnth/$cat_yr\-$cat_mnth\-$cat_date"; }
+			        if ($N == -2) { $cat_directory .= "/$cat_yr\-$cat_mnth/$cat_yr\-$cat_mnth\-$cat_date"; }
+			        if ($N == -1) { $cat_directory .= "/$cat_yr\-$cat_mnth\-$cat_date"; }
+			        if ($N == 1)  { $cat_directory .= "/$cat_yr"; }
+			        if ($N == 2)  { $cat_directory .= "/$cat_yr/$cat_yr\-$cat_mnth"; }
+			        if ($N == 3)  { $cat_directory .= "/$cat_yr/$cat_yr\-$cat_mnth/$cat_yr\-$cat_mnth\-$cat_date"; }
+			 
+			        $concatenate_parameters .= "$cat_directory ";
+			}
+	
+			# Set up the flow-tools complete command to generate filtered data for the 5-minute period. Reuse previous concatenations.
+		 
+			$flowcat_command = "$flow_bin_directory/flow-cat" . " $concatenate_parameters";
+			if (($device_name ne "") && (!$created_concat{$device_name})) {
+				$concat_file = "$work_directory/CONCAT_$device_name";
+				$create_concat_command = "$flowcat_command > $concat_file";
+				if ($debug_monitor eq "Y") { print DEBUG "$create_concat_command\n"; }
+				system($create_concat_command);
+				$file_size = stat($concat_file)->size;
+				if ($file_size != 0) { $created_concat{$device_name} = 1; }
+
+				if ($FLOWS_ACTIVE) {
+					$flownfilter_command = "$flow_bin_directory/flow-nfilter -f $work_directory/FlowMonitor_Collector_filter -FFlow_Filter";
+					$flowprint_command = "$flow_bin_directory/flow-print -f5 >$work_directory/FlowMonitor_Collector_output";
+					$flow_run = "$flownfilter_command < $work_directory/CONCAT_$device_name | $flowprint_command";
+				} else {
+                                	$buckets_cfg = "$work_directory/FlowMonitor_Collector_buckets_cfg";
+	                                $flow_run = "$flow_bin_directory/flow-report -s$buckets_cfg -SLINEAR < $work_directory/CONCAT_$device_name > $work_directory/FlowMonitor_Collector_output";
+				}
+
+                        } elsif ((($exporter ne "") || ($no_devices_or_exporters eq "Y")) && (!$created_concat{$exporter})) {
+
+				$concat_file = "$work_directory/CONCAT_exporter";
+				$create_concat_command = "$flowcat_command > $concat_file";
+				if ($debug_monitor eq "Y") { print DEBUG "$create_concat_command\n"; }
+				system($create_concat_command);
+				$file_size = stat($concat_file)->size;
+				if ($file_size != 0) { $created_concat{$exporter} = 1; }
+
+				if ($FLOWS_ACTIVE) {
+					$flownfilter_command = "$flow_bin_directory/flow-nfilter -f $work_directory/FlowMonitor_Collector_filter -FFlow_Filter";
+					$flownfilter_command = "$flow_bin_directory/flow-nfilter -f $work_directory/FlowMonitor_Collector_filter -FFlow_Filter";
+					$flowprint_command = "$flow_bin_directory/flow-print -f5 >$work_directory/FlowMonitor_Collector_output";
+					$flow_run = "$flownfilter_command < $work_directory/CONCAT_exporter | $flowprint_command";
+				} else {
+                                	$buckets_cfg = "$work_directory/FlowMonitor_Collector_buckets_cfg";
+	                                $flow_run = "$flow_bin_directory/flow-report -s$buckets_cfg -SLINEAR < $work_directory/CONCAT_exporter > $work_directory/FlowMonitor_Collector_output";
+				}
+
+			} else {
+
+                                if (($exporter ne "") || ($no_devices_or_exporters eq "Y")) {
+					if ($FLOWS_ACTIVE) {
+						$flownfilter_command = "$flow_bin_directory/flow-nfilter -f $work_directory/FlowMonitor_Collector_filter -FFlow_Filter";
+	        				$flowprint_command = "$flow_bin_directory/flow-print -f5 >$work_directory/FlowMonitor_Collector_output";
+	                                        $flow_run = "$flownfilter_command < $work_directory/CONCAT_exporter | $flowprint_command";
+					} else {
+	                                	$buckets_cfg = "$work_directory/FlowMonitor_Collector_buckets_cfg";
+		                                $flow_run = "$flow_bin_directory/flow-report -s$buckets_cfg -SLINEAR < $work_directory/CONCAT_exporter > $work_directory/FlowMonitor_Collector_output";
+					}
+
+                                } else {         
+					if ($FLOWS_ACTIVE) {
+						$flownfilter_command = "$flow_bin_directory/flow-nfilter -f $work_directory/FlowMonitor_Collector_filter -FFlow_Filter";
+	        				$flowprint_command = "$flow_bin_directory/flow-print -f5 >$work_directory/FlowMonitor_Collector_output";
+	                                        $flow_run = "$flownfilter_command < $work_directory/CONCAT_$device_name | $flowprint_command";
+					} else {
+	                                	$buckets_cfg = "$work_directory/FlowMonitor_Collector_buckets_cfg";
+		                                $flow_run = "$flow_bin_directory/flow-report -s$buckets_cfg -SLINEAR < $work_directory/CONCAT_$device_name > $work_directory/FlowMonitor_Collector_output";
+					}
+				}
+			}
+
+			if (!$FLOWS_ACTIVE) {
+
+				$filter_file = "$work_directory/FlowMonitor_Collector_filter";
+                                open (BUCKETS_CFG,">$buckets_cfg");
+                                print BUCKETS_CFG "include-filter $filter_file\n";
+                                print BUCKETS_CFG "stat-report buckets\n";
+                                print BUCKETS_CFG "  type linear-interpolated-flows-octets-packets\n";
+                                print BUCKETS_CFG "  output\n";
+                                print BUCKETS_CFG "    format ascii\n";
+                                print BUCKETS_CFG "    options +header,+totals\n";
+                                print BUCKETS_CFG "\n";
+                                print BUCKETS_CFG "stat-definition LINEAR\n";
+                                print BUCKETS_CFG "  filter Flow_Filter\n";
+                                print BUCKETS_CFG "  report buckets\n";
+                                close(BUCKETS_CFG);
+			}
+
+			if ($debug_monitor eq "Y") { print DEBUG "$flow_run\n"; }
+
+			system($flow_run);
+
+			if ($debug_monitor eq "Y") { time_check("end flowtools_processing"); }
+		}
+
+		$period_bits  = 0;
+		$period_pkts  = 0;
+		$period_flows = 0;
+	
+                if (($IPFIX) && (!$FLOWS_ACTIVE)) {
+
+			if ($debug_monitor eq "Y") { time_check("start SiLK_BINS"); }
+
+			$num_ipfix++;
+
+                        open(BINS,"<$work_directory/FlowMonitor_Collector_output");
+                        while (<BINS>) {
+                                $silk_record = $_;
+                                $silk_record =~ s/\s+//g;
+                                ($bucket_start,$num_recs,$num_bytes,$num_pkts) = split(/\|/,$silk_record);
+                                if (($bucket_start < $period_start_epoch) || ($bucket_start >= $period_end_epoch)) { next; }
+                                $period_bits = $num_bytes * 8;
+				$period_flows = $num_recs;
+				$period_pkts  = $num_pkts;
+			}
+
+			if ($debug_monitor eq "Y") { time_check("end SiLK_BINS"); }
+
+		} elsif ($FLOWS_ACTIVE) {
+
+			if ($debug_monitor eq "Y") { time_check("start flows_active"); }
+
+                        # Parse through all flows that matched the filter, adding bits if part of flow within period
+
+			$num_flows_active++;
+
+                        open(FLOWS,"<$work_directory/FlowMonitor_Collector_output");
+                        while (<FLOWS>) {
+
+                                $first_char = substr($_,0,1);
+                                if (!($first_char =~ /[0-9]/)) { next; }
+
+			        if ($IPFIX) {
+			                $silk_record = $_;
+			                $silk_record =~ s/\s+//g;
+			                ($s_time,$e_time,$dur,$sif,$sip,$sp,$dif,$dip,$dp,$p,$fl,$pkt,$oct) = split(/\|/,$silk_record);
+			        } else {
+			                ($s_time,$e_time,$sif,$sip,$sp,$dif,$dip,$dp,$p,$fl,$pkt,$oct) = split(/\s+/,$_);
+			        }
+	
+			        if ($IPFIX) {
+			                $smd = substr($s_time,5,2) . substr($s_time,8,2);
+			                $s_tm = substr($s_time,11,8);
+			                $s_ms = substr($s_time,20,3);
+			                $emd = substr($e_time,5,2) . substr($e_time,8,2);
+			                $e_tm = substr($e_time,11,8);
+			                $e_ms = substr($e_time,20,3);
+			        } else {
+		                        ($smd,$s_tm,$s_ms) = split(/\./,$s_time);
+		                        ($emd,$e_tm,$e_ms) = split(/\./,$e_time);
+			        }
+	
+                                # End of year special processing
+
+                                if ((($check_md eq "1231") && ($start_secs > 84600)) || (($check_md eq "0101") && ($start_secs < 1800))) {
+                                        if ($smd eq "1231") { $smd = "0031"; }
+                                        if ($emd eq "1231") { $emd = "0031"; }
+                                        if ($period_start_md eq "1231") { $period_start_md = "0031"; }
+                                        if ($period_end_md eq "1231")   { $period_end_md   = "0031"; }
+                                }
+
+                                ($shr,$smn,$ssc) = split(/:/,$s_tm);
+                                ($ehr,$emn,$esc) = split(/:/,$e_tm);
+
+                                $s_secs = 3600*$shr + 60*$smn + $ssc;
+                                $e_secs = 3600*$ehr + 60*$emn + $esc;
+
+                                # Determine flow time length
+
+                                if ($smd eq $emd) {
+                                        $flow_length = ($e_secs + ($e_ms/1000)) - ($s_secs + ($s_ms/1000));
+                                        if ($flow_length <= 0) { $flow_length = 0.001; } }
+                                else {
+                                        $flow_length = ($e_secs + ($e_ms/1000)) + (86400 - ($s_secs + ($s_ms/1000)));
+                                        if ($flow_length <= 0) { $flow_length = 0.001; }
+                                }
+
+                                $ss_delta_md = $smd - $period_start_md;
+                                $es_delta_md = $emd - $period_start_md;
+
+                                if ($ss_delta_md == 0) {
+                                        $start_delta = ($s_secs + ($s_ms/1000)) - $start_secs; }
+                                elsif ($ss_delta_md >= 1) {
+                                        $start_delta = 86400 - $start_secs + ($s_secs + ($s_ms/1000)); }
+                                elsif ($ss_delta_md <= -1) {
+                                        $start_delta = ($s_secs + ($s_ms/1000)) - 86400; }
+
+                                if ($es_delta_md == 0) {
+                                        $end_delta = ($e_secs + ($e_ms/1000)) - $start_secs; }
+                                elsif ($es_delta_md >= 1) {
+                                        $end_delta = 86400 - $start_secs + ($e_secs + ($e_ms/1000)); }
+                                elsif ($es_delta_md <= -1) {
+                                        $end_delta = ($e_secs + ($e_ms/1000)) - 86400; }
+
+                                # Exclude flows totally outside of the period
+
+                                if ($start_delta >= $collection_period) { next; }
+                                if ($end_delta   <= 0)   { next; }
+
+                                # Compute portion of this flow that is within the period
+
+                                if ($start_delta < 0) {
+	                                if ($end_delta < $collection_period) {
+	                                	$period_flows += $end_delta;
+	                                } else {
+	                                	$period_flows += $collection_period;
+					}
+                                } else {
+	                                if ($end_delta < $collection_period) {
+						$period_flows += $flow_length;
+	                                } else {
+	                                     	$period_flows += $collection_period - $start_delta;
+	                                }
+                                }
+			}
+
+			if ($debug_monitor eq "Y") { time_check("end flows_active"); }
+
+		} else {
+
+			if ($debug_monitor eq "Y") { time_check("start flow_BUCKETS"); }
+
+			$num_linear++;
+
+	                open (BUCKETS,"<$work_directory/FlowMonitor_Collector_output");
+	                while (<BUCKETS>) {
+	                        if (substr($_,0,6) eq "# recn") { $start_data = 1; next; } if (!$start_data) { next; }
+	                        ($unix_secs,$fl,$oct,$pkt) = split(/,/);
+	                        if (($unix_secs < $start_epoch) || ($unix_secs > $end_epoch)) { next; }
+	                        $period_bits  += ($oct * 8);
+	                        $period_flows += $fl;
+	                        $period_pkts  += $pkt;
+	                }
+
+			if ($debug_monitor eq "Y") { time_check("end flow_BUCKETS"); }
+		}
+
+		$rm_command = "rm $work_directory/FlowMonitor_Collector_output";
+		system($rm_command);
+	
+		# Get a per-second average for the 5 minute period
+
+		if ($monitor_type =~ /fps/) {
+                        if ($sampling_multiplier > 1) { $period_flows *= $sampling_multiplier; }
+                        $collection_period_avg =        $period_flows / $collection_period;
+		} elsif ($monitor_type =~ /pps/) {
+                        if ($sampling_multiplier > 1) { $period_pkts *= $sampling_multiplier; }
+                        $collection_period_avg =   int( $period_pkts  / $collection_period );
+                } else {
+                        if ($sampling_multiplier > 1) { $period_bits *= $sampling_multiplier; }
+                        $collection_period_avg =   int( $period_bits / $collection_period );
+                }
+
+		# Update the appropriate RRD file
+
+		if ($debug_monitor eq "Y") { time_check("start RRDtool_update"); }
+		if ($debug_monitor eq "Y") { print DEBUG "$monitor_label  $period_end:$collection_period_avg\n"; }
+
+		$rrdtool_command = "$rrdtool_bin_directory/rrdtool update $rrdtool_file $period_end:$collection_period_avg";
+		system($rrdtool_command);
+
+		if ($debug_monitor eq "Y") { time_check("end RRDtool_update"); }
+	
+		# If user has requested alerts, notify if threshold exceeded
+
+		if ((($alert_threshold > 0) && ($collection_period_avg > $alert_threshold)) || 
+		    (($alert_threshold < 0) && ($collection_period_avg < (-1 * $alert_threshold))) ||
+		      ($alert_frequency =~ /sigma/)) {
+
+			$time_since_last = $period_end - $alert_last_notified;
+
+			$email_alert = 0;
+
+			if ($alert_frequency eq "eachtime") { 
+				$alert_frequency_out = "Single Miss - Each Occurence";
+				$alert_maximum = $collection_period_avg;
+				$email_alert = 1; 
+			}
+
+			if (($alert_frequency eq "daily") && ($time_since_last >= 86400)) { 
+				$alert_frequency_out = "Single Miss - Once a Day";
+				$alert_maximum = $collection_period_avg;
+				$email_alert = 1; 
+			}
+
+			if ($alert_frequency =~ /sigma/) {
+
+				if ($alert_frequency eq "sigma1") { 
+					($previous_readings,$sigma_multiplier) = split(/:/,$sigma_type_1);
+					$alert_frequency_out = "Sigma Type 1 Check";
+				} elsif ($alert_frequency eq "sigma2") {
+					($previous_readings,$sigma_multiplier) = split(/:/,$sigma_type_2);
+					$alert_frequency_out = "Sigma Type 2 Check";
+				} elsif ($alert_frequency eq "sigma3") {
+					($previous_readings,$sigma_multiplier) = split(/:/,$sigma_type_3);
+					$alert_frequency_out = "Sigma Type 3 Check";
+				}
+
+				$xport_end   = $period_end;
+				$xport_start = $period_end - (($previous_readings + 2) * $collection_period);
+				$xport_end   += (0.5 * $collection_period);
+				$xport_start -= (0.5 * $collection_period);
+
+				$xport_filename = "$rrdtool_directory/$monitor_file.rrd";
+				$sigma_filename = "$work_directory/FlowMonitor_sigma";
+				$xport_command = "$rrdtool_bin_directory/rrdtool xport --start $xport_start --end $xport_end DEF:flowbits=$xport_filename:flowbits:AVERAGE XPORT:flowbits:monitor_reading > $sigma_filename";
+				system($xport_command);
+
+				@data_values = ();
+				@data_points = ();
+				open(XPORT,"<$sigma_filename");
+				while (<XPORT>) { 
+					if (/<row>/) { 
+						($first_part,$second_part) = split(/<v>/);
+						($data_value,$remainder) = split(/<\/v>/,$second_part);
+						if ($data_value ne "NaN") { push(@data_values,$data_value); }
+					}
+				}
+				$current_value = int(pop(@data_values));
+				for ($i=0;$i<$previous_readings;$i++) {
+					$previous_value = pop(@data_values);
+					unshift(@data_points,$previous_value);
+				}
+
+				$running_avg  = &average(\@data_points);
+				$running_std  = &stdev  (\@data_points);
+				$running_band = $sigma_multiplier * $running_std;
+				$alert_threshold = int($running_avg + $running_band + 0.5);
+			
+				if ($current_value > $alert_threshold) { $email_alert = 1; }
+			}
+
+			if (($alert_frequency eq "eachtime3") || ($alert_frequency eq "eachtime6") || ($alert_frequency eq "eachtime12") || 
+			    ($alert_frequency eq "daily3")    || ($alert_frequency eq "daily6")    || ($alert_frequency eq "daily12")) { 
+
+				($last_exceed_time,$num_consecutive,$alert_maximum) = split(/\^/,$alert_consecutive);
+
+				if (($period_end - $last_exceed_time) <= 300) { 
+					$num_consecutive++;
+					if ($collection_period_avg > $alert_maximum) { $alert_maximum = $collection_period_avg; }
+				} else {
+					$num_consecutive = 1;
+					$alert_maximum = $collection_period_avg;
+				}
+
+				$alert_consecutive = $period_end ."^". $num_consecutive ."^". $alert_maximum;
+
+				if ($debug_monitor eq "Y") { print DEBUG "alert_frequency: $alert_frequency  alert_consecutive: $alert_consecutive\n"; }
+
+				if (($num_consecutive >= 3) && ($alert_frequency eq "eachtime3")) {
+					$alert_frequency_out = "3 Consecutive - Each Occurence";
+					$alert_consecutive = "";
+					$email_alert = 1;
+				} elsif (($num_consecutive >= 6) && ($alert_frequency eq "eachtime6")) {
+					$alert_frequency_out = "6 Consecutive - Each Occurence";
+					$alert_consecutive = "";
+					$email_alert = 1;
+				} elsif (($num_consecutive >= 12) && ($alert_frequency eq "eachtime12")) {
+					$alert_frequency_out = "12 Consecutive - Each Occurence";
+					$alert_consecutive = "";
+					$email_alert = 1;
+				} elsif (($num_consecutive >= 3) && ($alert_frequency eq "daily3") && ($time_since_last >= 86400)) {
+					$alert_frequency_out = "3 Consecutive - Once per Day";
+					$alert_consecutive = "";
+					$email_alert = 1;
+				} elsif (($num_consecutive >= 6) && ($alert_frequency eq "daily6") && ($time_since_last >= 86400)) {
+					$alert_frequency_out = "6 Consecutive - Once per Day";
+					$alert_consecutive = "";
+					$email_alert = 1;
+				} elsif (($num_consecutive >= 12) && ($alert_frequency eq "daily12") && ($time_since_last >= 86400)) {
+					$alert_frequency_out = "12 Consecutive - Once per Day";
+					$alert_consecutive = "";
+					$email_alert = 1;
+				}
+
+				# Update the Alert Consecutive field in the Filter file
+
+				open (EXISTING,"<$existing_filter");
+				open (TEMP,">$work_directory/temp.fil");
+				while (<EXISTING>) { 
+                        		$key = substr($_,0,8); 
+                        		if ($key eq " input: ") { 
+                                		($input,$field,$field_value) = split(/: /); 
+                                		if ($field eq "alert_consecutive") {  
+                                        		print TEMP " input: alert_consecutive: $alert_consecutive\n";
+                                		} else { print TEMP $_; }  
+					} else { print TEMP $_; }
+				}
+				close TEMP;
+				close EXISTING;
+
+				$copy_command = "cp $work_directory/temp.fil $existing_filter";
+				system($copy_command);
+				chmod $filter_file_perms, $existing_filter;
+			}
+
+			if ($email_alert) {
+
+				if ($alert_threshold < 0) {
+					$action = "not met";
+					$threshold_out = -1 * $alert_threshold;
+				} else {
+					$action = "exceeded";
+					if ($alert_frequency =~ /sigma/) {
+						$running_avg_out = int($running_avg + 0.5);
+						$running_std_out = int($running_std + 0.5);
+						$threshold_out = "$alert_threshold ($sigma_multiplier * Sigma ($running_std_out) above average ($running_avg_out) from previous $previous_readings readings)";
+						$alert_maximum = $current_value;
+					} else {
+						$threshold_out = $alert_threshold;
+					}
+				}
+
+				$active_dashboard = "";
+                        	$alert_subject = "FlowMonitor threshold $action: $monitor_file"; 
+				$monitor_link = "$FlowViewer_service://$FlowViewer_server$cgi_bin_short/FlowMonitor_Display.cgi?$active_dashboard^filter_hash=MT_$monitor_file";
+				$monitor_label_out = $monitor_label;
+				$monitor_label_out =~ s/ /~/g;
+				$revise_link = "$FlowViewer_service://$FlowViewer_server$cgi_bin_short/FlowMonitor_Management.cgi?$active_dashboard^Solicit^$monitor_label_out";
+
+				# Calculate start of period of consecutive misses
+
+				$start_consecutive = $start_epoch;
+				$end_consecutive   = $end_epoch;
+
+				if (($alert_frequency eq "eachtime3") || ($alert_frequency eq "daily3")) { $start_consecutive = $end_consecutive - (3 * $collection_period); }
+				if (($alert_frequency eq "eachtime6") || ($alert_frequency eq "daily6")) { $start_consecutive = $end_consecutive - (6 * $collection_period); }
+				if (($alert_frequency eq "eachtime12")|| ($alert_frequency eq "daily12")){ $start_consecutive = $end_consecutive - (12* $collection_period); }
+
+				$start_alert = &flow_date_time($start_consecutive,"LOCAL");
+				$end_alert   = &flow_date_time($end_consecutive,"LOCAL");
+
+				# Output the actual email
+
+                        	$mail_command = "|mail -s \"$alert_subject\" $alert_destination"; 
+                        	open (MAIL, "$mail_command"); 
+                        	print MAIL "\nThe flow-rate of the $monitor_file FlowMonitor";
+				print MAIL " has $action the configured Alert Threshold.\n\n";
+                        	print MAIL "   Start of Period: $start_alert\n";
+                        	print MAIL "     End of Period: $end_alert\n";
+                        	print MAIL "         Threshold: $threshold_out\n";
+				if (($alert_frequency eq "eachtime") || ($alert_frequency eq "daily") || ($alert_frequency =~ /sigma/)) {
+					print MAIL "    Observed Value: $alert_maximum\n";
+                        	} else { 
+					print MAIL "Max Observed Value: $alert_maximum\n";
+				}
+                        	print MAIL "\nSee: $monitor_link\n";
+                        	print MAIL "\nCurrent Alert Frequency: \'$alert_frequency_out\'. To turn off these emails, set the Alert Frequency to \'No Notification\'.\n";
+                        	print MAIL "\nSee: $revise_link\n";
+                        	close MAIL;
+
+				# Update the Alert Last Notified field in the Filter file
+
+				open (EXISTING,"<$existing_filter");
+				open (TEMP,">$work_directory/temp.fil");
+				while (<EXISTING>) { 
+                        		$key = substr($_,0,8); 
+                        		if ($key eq " input: ") { 
+                                		($input,$field,$field_value) = split(/: /); 
+                                		if ($field eq "alert_last_notified") {  
+                                        		print TEMP " input: alert_last_notified: $period_end\n";
+                                		} else { print TEMP $_; }  
+					} else { print TEMP $_; }
+				}
+				close TEMP;
+				close EXISTING;
+
+				$copy_command = "cp $work_directory/temp.fil $existing_filter";
+				system($copy_command);
+				chmod $filter_file_perms, $existing_filter;
+			}
+		}
+
+		if ($collection_period_avg != 0) { $num_non_zero++; } else { $num_zero++; }
+
+		if ($log_collector_med eq "Y") {
+			printf LOG "%-40s %-15s\n", $monitor_label, $collection_period_avg;
+		} elsif ($log_collector_long eq "Y") {
+			print LOG "                     For: $monitor_label\n";
+			print LOG "            Monitor Type: $monitor_type\n";
+			print LOG "            RRDtool File: $rrdtool_file\n";
+                	if    ($monitor_type =~ /fps/) { print LOG "         Flows in Period: $period_flows\n"; }
+                	elsif ($monitor_type =~ /pps/) { print LOG "       Packets in Period: $period_pkts\n"; }
+                	else                            { print LOG "          Bits in Period: $period_bits\n"; }
+			print LOG "        CollectPeriodAvg: $collection_period_avg\n";
+			print LOG "                  Update: $period_end : $collection_period_avg\n";
+			print LOG "\n";
+		}
+
+		if ($debug_monitor eq "Y") { time_check("end this_filter"); }
+	}
+
+	while ($work_file = <$work_directory/*>) {
+		if (($work_file =~ /Prefiltered/) || ($work_file =~ /CONCAT/)) {
+			$rm_command = "rm $work_file";
+			system($rm_command);
+		}
+	}
+
+	$just_started_up = 0;
+
+	$end_collect_time = time;
+	$loop_time = $end_collect_time - $start_collect_time;
+
+	($sec,$min,$hr,$date,$mnth,$yr,$day,$yr_date,$DST) = localtime(time);
+
+	$yr = $yr + 1900;
+	$mnth++;
+	if (length($mnth) < 2) { $mnth = "0" . $mnth; }
+	if (length($date) < 2) { $date = "0" . $date; }
+	if (length($hr)   < 2) { $hr   = "0" . $hr; }
+	if (length($min)  < 2) { $min  = "0" . $min; }
+	if (length($sec)  < 2) { $sec  = "0" . $sec; }
+	
+	if    ($date_format eq "DMY")  { $current_date = $date ."/". $mnth ."/". $yr ." ". $hr .":". $min .":". $sec; }
+	elsif ($date_format eq "DMY2") { $current_date = $date .".". $mnth .".". $yr ." ". $hr .":". $min .":". $sec; }
+	elsif ($date_format eq "YMD")  { $current_date = $yr ."-". $mnth ."-". $date ." ". $hr .":". $min .":". $sec; }
+	else                           { $current_date = $mnth ."/". $date ."/". $yr ." ". $hr .":". $min .":". $sec; }
+
+	if (($log_collector_short eq "Y") || ($log_collector_med eq "Y") || ($log_collector_long eq "Y")) {
+		print LOG "$num_zero Monitors had a zero value. $num_non_zero Monitors had a positive value. $num_ipfix IPFIX, $num_flows_active Flows Active, $num_linear Linear.\n";
+		print LOG "At $current_date finished this loop. Update period: $period_end  $num_monitors Monitors. Loop took: $loop_time seconds\n"; 
+	}
+
+	close (LOG);
+	close (DEBUG);
+
+	$sleep_period = $collection_period - $loop_time;
+	if ($sleep_period < 1) { $sleep_period = 1; }
+	sleep ($sleep_period);
+}
+
+sub print_error {
+
+        my ($error_text) = @_;
+
+	if ($debug_monitor eq "Y") { print "$error_text\n"; }
+        print "\n\nLooking at $monitor_file:\n";
+        print "$error_text\n";
+
+        exit;
+}
+
+sub average {
+        my($data) = @_;
+        if (not @$data) {
+                die("Empty array\n");
+        }
+        my $total = 0;
+        foreach (@$data) {
+                $total += $_;
+        }
+        my $average = $total / @$data;
+        return $average;
+}
+
+sub stdev {
+        my($data) = @_;
+        if(@$data == 1){
+                return 0;
+        }
+        my $average = &average($data);
+        my $sqtotal = 0;
+        foreach(@$data) {
+                $sqtotal += ($average-$_) ** 2;
+        }
+        my $std = ($sqtotal / (@$data-1)) ** 0.5;
+        return $std;
+}
+
+sub fix_legacy_silk {
+
+	if ($debug_monitor eq "Y") { print DEBUG "Fixing legacy file for SiLK: $existing_filter\n"; }
+
+	if (($IPFIX) && ($silk_rootdir eq "")) {
+		$grep_command = "grep path-format $silk_data_directory/silk.conf";
+		open(GREP,"$grep_command 2>&1|"); 
+		while (<GREP>) {
+			chop;
+			($left_part,$path_format) = split(/path-format/);
+			if ($left_part =~ /\#/) {
+				$silk_rootdir = "$silk_data_directory/$device_name";
+			} else {
+				$path_format =~ s/\s+//g;
+				$path_format =~ s/\///g;
+				$path_format =~ s/\"//g;
+				($left_part,$dir1,$dir2,$dir3,$dir4,$dir5,$dir6,$dir7) = split(/\%/,$path_format);
+				if ($dir1 ne "T") {
+					$silk_rootdir = $silk_data_directory;
+				} else {
+					$silk_rootdir = "$silk_data_directory/$device_name";
+				}
+			}
+		}
+		if ($device_name eq "Site") { $silk_rootdir = $silk_data_directory; }
+	}
+
+	if ($IPFIX) {
+		if ($silk_class    eq "") { $silk_class    = $silk_class_default; } 
+		if ($silk_flowtype eq "") { $silk_flowtype = $silk_flowtype_default; } 
+		if ($silk_type     eq "") { $silk_type     = $silk_type_default; } 
+		if ($silk_sensors  eq "") { $silk_sensors  = $silk_sensors_default; } 
+		if ($silk_switches eq "") { $silk_switches = $silk_switches_default; } 
+	} else {
+		$silk_rootdir  = "";
+		$silk_class    = "";
+		$silk_flowtype = "";
+		$silk_type     = "";
+		$silk_sensors  = "";
+		$silk_switches = "";
+	}
+
+	$legacy_temp_filter = "$work_directory/legacy_temp_filter";
+	open (TEMP_FILTER,">$legacy_temp_filter");
+
+	open (EXISTING,"<$existing_filter");
+	while (<EXISTING>) {
+		chop;
+		$key = substr($_,0,8);
+              	if ($key eq " input: ") {
+                      	($input,$field,$field_value) = split(/: /);
+			if (substr($field,-1,1) eq ":") { chop $field; }
+			if ($field eq "silk_field") {
+				if (!$LEGACY_v44) {
+					print TEMP_FILTER " input: silk_rootdir: $silk_rootdir\n";
+					print TEMP_FILTER " input: silk_class: $silk_class\n";
+					print TEMP_FILTER " input: silk_flowtype: $silk_flowtype\n";
+					print TEMP_FILTER " input: silk_type: $silk_type\n";
+					print TEMP_FILTER " input: silk_sensors: $silk_sensors\n";
+					print TEMP_FILTER " input: silk_switches: $silk_switches\n";
+				}
+				next;
+			} elsif ($field eq "IPFIX") {
+				if ($IPFIX) { print TEMP_FILTER " input: IPFIX: 1\n"; }
+				else { print TEMP_FILTER " input: IPFIX: 0\n"; }
+			} elsif ($field eq "silk_other") {
+				next;
+			} elsif ($field eq "alert_last_notified") {
+				print TEMP_FILTER "$_\n";
+				if (!$IPFIX_FOUND) {
+					print TEMP_FILTER " input: silk_rootdir: $silk_rootdir\n";
+					print TEMP_FILTER " input: silk_class: $silk_class\n";
+					print TEMP_FILTER " input: silk_flowtype: $silk_flowtype\n";
+					print TEMP_FILTER " input: silk_type: $silk_type\n";
+					print TEMP_FILTER " input: silk_sensors: $silk_sensors\n";
+					print TEMP_FILTER " input: silk_switches: $silk_switches\n";
+				}
+			} elsif (($IPFIX_BLANK) && ($field eq "silk_rootdir")) {
+				print TEMP_FILTER " input: silk_rootdir: $silk_rootdir\n";
+			} elsif (($IPFIX_BLANK) && ($field eq "silk_class")) {
+				print TEMP_FILTER " input: silk_class: $silk_class\n";
+			} elsif (($IPFIX_BLANK) && ($field eq "silk_flowtype")) {
+				print TEMP_FILTER " input: silk_flowtype: $silk_flowtype\n";
+			} elsif (($IPFIX_BLANK) && ($field eq "silk_type")) {
+				print TEMP_FILTER " input: silk_type: $silk_type\n";
+			} elsif (($IPFIX_BLANK) && ($field eq "silk_sensors")) {
+				print TEMP_FILTER " input: silk_sensors: $silk_sensors\n";
+			} elsif (($IPFIX_BLANK) && ($field eq "silk_switches")) {
+				print TEMP_FILTER " input: silk_switches: $silk_switches\n";
+			} else {
+				print TEMP_FILTER "$_\n";
+			}
+		} else {
+			print TEMP_FILTER "$_\n";
+		}
+	}
+	close(EXISTING);
+	close(TEMP_FILTER);
+
+	$move_command = "mv $legacy_temp_filter $existing_filter";
+	system($move_command);
+}

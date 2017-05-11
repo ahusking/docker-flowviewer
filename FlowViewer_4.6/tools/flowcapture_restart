@@ -1,0 +1,62 @@
+#!/bin/sh
+#
+# flowcapture_restart:  Starts all existing flow-capture processes
+#
+# description:  This script starts all existing flow-capture processes
+#
+# processname:  There is not a single process associated with these
+#               actions, rather there are multiple processes. This
+#               script takes care of all of them.
+#
+# can be restarted using the following command:
+# sudo /etc/init.d/flowcapture_restart
+
+user=flowviewer
+RRDTOOL_PATH=/usr/bin
+FLOW_CAPTURE_TABLE=/etc/flow-capture-table.conf
+FLOW_CAPTURE_BIN=/usr/local/flow-tools/bin/flow-capture
+FLOW_CAPTURE_PID_DIR=/data/flows/pids/flowtool.pid
+RETVAL=0
+
+start() {
+    echo -n $"Starting flow-capture processes: "
+
+    # loop through FLOW_CAPTURE_TABLE, starting flow-capture as appropriate
+    perl -ne 'print unless m{^\s*$} or m{^\s*#}' $FLOW_CAPTURE_TABLE |
+        while read line; do
+                echo Starting flow capture for $line:
+                if ! nice -20 /bin/su --shell=/bin/sh $user -c "$FLOW_CAPTURE_BIN -p $FLOW_CAPTURE_PID_DIR $line"; then RETVAL=1
+                                echo Problem starting flow-capture for $line >&2
+                fi
+        done
+
+    echo Done.
+}
+
+stop() {
+    echo -n $"Stopping flowtool processes: "
+    if ! /bin/kill `cat /data/flows/pids/flowtool.pid.*`; then
+        RETVAL=1
+        echo Problem stopping flowtools >&2
+    fi
+
+    echo Done.
+}
+
+# See how we were called.
+case "$1" in
+    start)
+        start
+        ;;
+    stop)
+        stop
+        ;;
+    restart)
+        stop
+        start
+        ;;
+    *)
+        echo $"Usage: $0 {start|stop|restart}"
+        ;;
+esac
+exit $RETVAL

@@ -28,3 +28,7 @@
    28  ls
    29  history
 
+
+
+
+https://blog.pierky.com/netflow-how-to-install-and-configure-flow-tools-and-flowviewer-on-a-fresh-debian-setup/

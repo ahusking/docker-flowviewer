@@ -1,0 +1,1 @@
+rwflowpack --no-daemon --root-directory=/data/V9-exporter --site-config-file=/data/silk.conf --sensor-configuration=/data/sensor.conf --log-directory=/var/log/V9-exporter --pack-interfaces --sensor-name=V9-exporter 2>&1

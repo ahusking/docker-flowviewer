@@ -1,0 +1,85 @@
+#! /usr/bin/perl
+#
+#  Purpose:
+#  FlowViewer_CleanFiles is a utility for cleaning out temporary files
+#  that have been left over from debugging (e.g. $debug_files = 'Y')
+#  or are intermediate files generated during the tool invocations. 
+#  All files older than $remove_files_time will be removed from the 
+#  $working_directory. This can be run from crontab.
+#
+#  Description:
+#
+#  Input arguments (received from the form):
+#  Name                 Description
+#  -----------------------------------------------------------------------
+#  none 
+#
+#  Modification history:
+#  Author       Date            Vers.   Description
+#  -----------------------------------------------------------------------
+#  J. Loiacono  04/01/2007      3.2     Original released version
+#  J. Loiacono  12/07/2007      3.3     Minor fixes
+#  J. Loiacono  02/14/2008      3.3.1   Minor re-alignment
+#  J. Loiacono  03/17/2011      3.4     Keep from deleting new save logo's
+#  J. Loiacono  05/08/2012      4.0     Removed removal from Reports Directory
+#  J. Loiacono  09/11/2013      4.2.1   Fixed for removing directories
+#
+#$Author$
+#$Date$
+#$Header$
+#
+###########################################################################
+#
+#               BEGIN EXECUTABLE STATEMENTS
+#
+ 
+use FlowViewer_Configuration;
+use FlowViewer_Utilities;
+use File::stat;
+
+$current_time = time;
+$start_time        = epoch_to_date($current_time);
+$work_files_time   = epoch_to_date($current_time - $remove_workfiles_time);
+$graph_files_time  = epoch_to_date($current_time - $remove_graphfiles_time);
+
+print "\nThis FlowViewer_CleanFiles run started: $start_time\n\n";
+
+# Clean out the Work directory according to 'remove_workfiles_time'
+
+print "Removing files from $work_directory older than: $work_files_time\n\n";
+
+while ($next_file = <$work_directory/*>) { 
+       
+	$last_access = stat($next_file)->mtime;
+        ($directory,$filename) = $next_file =~ m/(.*\/)(.*)$/; 
+	$file_age = $current_time - $last_access;
+
+	if (substr($filename,0,16) eq "FlowGrapher_sort") { next; }
+
+	if ($file_age > $remove_workfiles_time) {
+		print "  deleting $next_file\n";
+		$remove_command = "rm -rf $next_file";
+		system($remove_command);
+	}
+}
+
+# Clean out the Graph directory according to 'remove_workfiles_time'
+
+print "\nRemoving files from $graphs_directory older than: $graph_files_time\n\n";
+
+while ($next_file = <$graphs_directory/*>) { 
+       
+	if ($next_file eq "$save_directory")    { print "  skipping $next_file\n"; next; }
+
+        ($directory,$filename) = $next_file =~ m/(.*\/)(.*)$/;
+
+	$last_access = stat($next_file)->mtime;
+        ($directory,$filename) = $next_file =~ m/(.*\/)(.*)$/; 
+	$file_age = $current_time - $last_access;
+
+	if ($file_age > $remove_graphfiles_time) {
+		print "  deleting $next_file\n";
+		$remove_command = "rm -rf $next_file";
+		system($remove_command);
+	}
+}

@@ -1,0 +1,17 @@
+#!/usr/bin/perl 
+ 
+# Usage: epoch_to_date_local date time
+#
+# Example:
+#
+# >./date_to_epoch_local 07/12/2013 12:30:00
+# date input = 07/12/2013 12:30:00 (LOCAL);  epoch_date = 1373632200
+
+require Time::Local; 
+ 
+($mon,$day,$yr) = split(/\//,$ARGV[0]); 
+($hr, $min, $sec) = split(/:/,$ARGV[1]); 
+$date = $mon."/".$day."/".$yr." ".$hr.":".$min.":".$sec; 
+ 
+$epoch_date = Time::Local::timelocal($sec,$min,$hr,$day,$mon-1,$yr); 
+print"date input: $date (LOCAL);  epoch_time: $epoch_date\n";

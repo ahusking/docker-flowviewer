@@ -1,0 +1,64 @@
+#!/bin/sh
+#
+# flowmonitor_restart:  Starts both FlowMonitor scripts
+#
+# description:  This script starts up FlowMonitor_Collector and FlowMonitor_Grapher
+#
+# processname:  There is not a single process associated with these
+#               actions, rather there are multiple processes. This
+#               script takes care of all of them.
+#
+# can be restarted using the following command:
+# sudo /etc/init.d/flowmonitor_restart restart
+
+FlowViewer=/var/www/cgi-bin/FlowViewer_4.6
+user=flowviewer
+RRDTOOL_PATH=/usr/bin
+RETVAL=0
+
+start() {
+    echo -n $"Starting FlowMonitor processes: "
+
+    for i in FlowMonitor_Collector FlowMonitor_Grapher; do
+        echo Starting $i:
+        if ! /bin/su --shell=/bin/sh $user \
+                -c "cd $FlowViewer &&
+                nice -20 env PATH=$PATH:$RRDTOOL_PATH ./$i&"; then
+                        echo Problem starting $i >&2
+                        RETVAL=1
+        fi
+    done
+
+    echo Done.
+}
+
+stop() {
+    echo -n $"Stopping FlowMonitor processes: "
+
+    for i in FlowMonitor_Collector FlowMonitor_Grapher; do
+        if ! /usr/bin/killall -2 $i; then
+                RETVAL=1
+                echo Problem stopping $i >&2
+        fi
+    done
+
+    echo Done.
+}
+
+# See how we were called.
+case "$1" in
+    start)
+        start
+        ;;
+    stop)
+        stop
+        ;;
+    restart)
+        stop
+        start
+        ;;
+    *)
+        echo $"Usage: $0 {start|stop|restart}"
+        ;;
+esac
+exit $RETVAL

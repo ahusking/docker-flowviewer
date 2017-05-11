@@ -1,0 +1,8 @@
+time1=`date +%s`
+htmls="/var/www/html"
+printf "\n\n******* Starting rsync for $htmls *******\n"
+echo `date`
+rsync -avh -e "ssh -q" --delete --chmod="u+rwx,g+rwx,o+rX,o-w" $htmls user@192.168.100.110:/var/www/
+time2=`date +%s`
+delta=`echo "$time2 - $time1" | bc`
+printf "\nTotal run time: $delta seconds\n"

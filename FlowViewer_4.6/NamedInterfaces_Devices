@@ -1,0 +1,42 @@
+# SWAN Network Open 6509 Primary
+
+router_1:4:Management
+router_1:5:Soap and Bubbles
+router_1:6:Border (switch level)
+router_1:7:Smithlip
+router_1:8:Moonville
+router_1:9:SWAN DMZ
+router_1:10:SWAN Net NOC
+router_1:11:ABC
+router_1:12:SWAN PTH
+router_1:13:Management
+router_1:14:Manu LAN
+router_1:18:SWAN Time Host
+router_1:19:Edge
+router_1:23:HR LAN
+router_1:24:Marketing LAN
+
+# SWAN Network Open 6509 Backup
+
+router_1_b:4:Management
+router_1_b:5:Soap and Bubbles
+router_1_b:6:Border (switch level)
+router_1_b:7:Smithlip
+router_1_b:8:Moonville
+router_1_b:9:SWAN DMZ
+router_1_b:10:SWAN Net NOC
+router_1_b:11:ABC
+router_1_b:12:SWAN PTH
+router_1_b:13:Management
+router_1_b:14:Manu LAN
+router_1_b:18:SWAN Time Host
+router_1_b:19:Edge
+router_1_b:23:HR LAN
+router_1_b:24:Marketing LAN
+
+# SWAN Net Core Router
+
+swan-core-01a:0:Internet
+swan-core-01a:1:Border
+swan-core-01a:2:DMZ
+swan-core-01a:90:Internet 2

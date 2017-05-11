@@ -1,0 +1,17 @@
+#!/usr/bin/perl 
+ 
+# Usage: epoch_to_date_gm date time
+#
+# Example:
+#
+# >./date_to_epoch_gm 07/12/2013 12:30:00
+# date input = 07/12/2013 12:30:00 (GMT);  epoch_date = 1373632200
+
+require Time::Local; 
+ 
+($mon,$day,$yr) = split(/\//,$ARGV[0]); 
+($hr, $min, $sec) = split(/:/,$ARGV[1]); 
+$date = $mon."/".$day."/".$yr." ".$hr.":".$min.":".$sec; 
+ 
+$epoch_date = Time::Local::timegm($sec,$min,$hr,$day,$mon-1,$yr); 
+print"date input: $date (GMT);  epoch_time: $epoch_date\n"; 

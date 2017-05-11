@@ -1,0 +1,227 @@
+#! /usr/bin/perl
+#
+#  Purpose:
+#  FlowViewer_CleanSiLK performs directory trimming for SiLK-stored
+#  netflow data. It is similar to the "-E" parameter added to flow-capture
+#  invocation commands to control the maximum amount of disk space 
+#  to be provided for storage of the device's netflow data.
+#
+#  Description:
+#  The script makes use of the UNIX 'du' command to determine the size of
+#  each day's directories. It removes the oldest ones if the total space 
+#  used exceeds the quantity specified in FlowViewer_Configuration.pm
+#
+#  Input arguments (received from the form):
+#  Name                 Description
+#  -----------------------------------------------------------------------
+#  device_names         Identifying names of the devices (e.g. router1)
+#  @ipfix_storage       e.g., = ("router_1:15G","router_2:500M");
+#
+#  Modification history:
+#  Author       Date            Vers.   Description
+#  -----------------------------------------------------------------------
+#  J. Loiacono  09/11/2013      4.2.1   Original released version
+#  J. Loiacono  11/02/2014      4.5     Keep from dying on non-existent directory
+#
+#$Author$
+#$Date$
+#$Header$
+#
+###########################################################################
+#
+#               BEGIN EXECUTABLE STATEMENTS
+#
+ 
+use FlowViewer_Configuration;
+use FlowViewer_Utilities;
+use File::stat;
+
+$now = time;
+
+($sec,$min,$hr,$date,$mnth,$yr,$day,$yr_date,$DST) = localtime($now);
+$yr += 1900;
+$mnth++;
+if (length($mnth) < 2) { $mnth = "0" . $mnth; }
+if (length($date) < 2) { $date = "0" . $date; }
+if (length($hr)   < 2) { $hr   = "0" . $hr;   }
+if (length($min)  < 2) { $min  = "0" . $min;  }
+if (length($sec)  < 2) { $sec  = "0" . $sec;  }
+$run_date = $yr ."/". $mnth ."/". $date;
+$run_time = $hr .":". $min  .":". $sec;
+print "Time of this run of FlowViewer_CleanSiLK: $run_date $run_time\n\n";
+
+# Apply storage limits one device at a time
+
+$number_devices = $#ipfix_storage;
+
+for ($next_device=0;$next_device<=$number_devices;$next_device++) {
+
+	$device_limit = @ipfix_storage[$next_device];
+	($device_name,$storage_limit) = split(/:/,$device_limit);
+
+	$limit_value = $storage_limit;
+	chop $limit_value;
+	$limit_units = substr($storage_limit,-1,1);
+	
+	print "\nExamining device: $device_name which has a storage limit of $storage_limit\n";
+
+	if ($limit_units eq "K") { $storage_limit *= 1024; }
+	if ($limit_units eq "M") { $storage_limit *= 1024**2; }
+	if ($limit_units eq "G") { $storage_limit *= 1024**3; }
+
+	$path = $silk_data_directory ."/". $device_name;
+
+	$du_output  = "$work_directory/FlowViewer_CleanSiLK.output";
+	$du_command = "du -b $path > $du_output";
+	system($du_command);
+
+	$zero_days       = 0;
+	$no_more_days    = 0;
+	$observed_days   = 0;
+	$examined_total  = 0;
+	$prior_day_total = 0;
+	@dates_storage   = ();
+
+	while ($examined_total < $storage_limit) {
+
+		# Examine previous day ...
+
+		$prior_day = $now - ($observed_days * 86400);
+		($sec,$min,$hr,$date,$mnth,$yr,$day,$yr_date,$DST) = localtime($prior_day);
+		$yr += 1900;
+		$mnth++;
+		if (length($mnth) < 2) { $mnth = "0" . $mnth; }
+		if (length($date) < 2) { $date = "0" . $date; }
+		$prior_date = $yr ."/". $mnth ."/". $date;
+
+		# Total up space used for all subdirectories on that previous day
+
+		$grep_command = "grep $prior_date $du_output";
+		open(GREP,"$grep_command 2>&1|");
+		while (<GREP>) {
+		        chop;
+		        ($du_size,$du_file) = split(/\s+/);
+			$prior_day_total += $du_size;
+		}
+
+		if ($prior_day_total > 0) { 
+			$examined_total += $prior_day_total; 
+		} else { 
+			$zero_days++;
+			if ($zero_days > $permitted_zero_days) {
+				$observed_days++;
+				last; 
+			}
+		}
+
+		$date_storage = $prior_date .":". $prior_day_total .":". $examined_total;
+		push(@dates_storage,$date_storage);
+
+		$prior_day_total = 0;
+		$observed_days++;
+	}
+
+	$last_nonzero_day = $#dates_storage;
+	foreach $date_storage (reverse @dates_storage) {
+		($prior_date,$prior_day_total,$examined_total) = split(/:/,$date_storage);
+		if ($prior_day_total == 0) { $last_nonzero_day--; }
+		else { last; }
+	}
+
+	for ($i=0;$i<=$last_nonzero_day;$i++) {
+		($prior_date,$prior_day_total,$examined_total) = split(/:/,$dates_storage[$i]);
+		$prior_day_total_out = convert_octets2string($prior_day_total);
+		$examined_total_out  = convert_octets2string($examined_total);
+		printf "Device: %-20s Examined Date: %-8s     Date Total: %-10s  Running Total: %-15s\n", $device_name,$prior_date,$prior_day_total_out,$examined_total_out;
+	}
+
+	if ($examined_total > $storage_limit) {
+
+		print "\nAll Date directories older than and including $prior_date will be removed:\n";
+	
+		@silk_directories = ();
+		opendir (DIR, $path) or die "Unable to open $path: $!";
+		@files = grep { !/^\.{1,2}$/ } readdir (DIR);
+		closedir (DIR);
+		foreach $file (@files) { 
+			$silk_directory = $path ."/". $file;
+			if (-d $silk_directory) { push(@silk_directories,$silk_directory); }
+		}
+	
+		$observed_days--;
+		$more_days = 1;
+		$progress = 0;
+		foreach $silk_directory (@silk_directories) { $finished{$silk_directory} = 1; }
+	
+		while ($more_days) {
+	
+			$prior_day = $now - ($observed_days * 86400);
+			($sec,$min,$hr,$date,$mnth,$yr,$day,$yr_date,$DST) = localtime($prior_day);
+			$yr += 1900;
+			$mnth++;
+			if (length($mnth) < 2) { $mnth = "0" . $mnth; }
+			if (length($date) < 2) { $date = "0" . $date; }
+			$prior_date = $yr ."/". $mnth ."/". $date;
+			$prior_mnth = $yr ."/". $mnth;
+	
+			foreach $silk_directory (@silk_directories) {
+				$date_directory = $silk_directory ."/". $prior_date;
+				if (-e $date_directory) {
+					$rm_command = "rm -rf $date_directory";
+					system($rm_command);
+					print "$rm_command\n";
+					$month_directory = $silk_directory ."/". $yr ."/". $mnth;
+					$month_directories{$month_directory} = 1;
+				} else {
+					$finished{$silk_directory} = 0;
+					$progress = 0;
+					foreach $silk_directory (@silk_directories) { $progress += $finished{$silk_directory}; }
+					if ($progress == 0) { $more_days = 0; }
+				}
+			}
+	
+			$observed_days++;
+		}
+	
+		$first_zero_month = 1;
+		foreach $month_directory (keys (%month_directories)) {
+			if ((-e $month_directory) && (is_empty($month_directory))) {
+				if ($first_zero_month) {
+					print "\nAll Month directories that are now empty will be removed:\n";
+					$first_zero_month = 0;
+				}
+				$rm_command = "rm -rf $month_directory";
+				system($rm_command);
+				print "$rm_command\n";
+				$year_directory = substr($month_directory,0,-2);
+				$year_directories{$year_directory} = 1;
+			}
+		}
+	
+		$first_zero_year = 1;
+		foreach $year_directory (keys (%year_directories)) {
+			if ((-e $year_directory) && (is_empty($year_directory))) {
+				if ($first_zero_year) {
+					print "\nAll Year directories that are now empty will be removed:\n";
+					$first_zero_year = 0;
+				}
+				$rm_command = "rm -rf $year_directory";
+				system($rm_command);
+				print "$rm_command\n";
+			}
+		}
+		print "\n";
+
+	} else {
+
+		$examined_total_out = convert_octets2string($examined_total);
+		$storage_limit_out  = convert_octets2string($storage_limit);
+		print "\nTotal data collected at this point, $examined_total_out, is within prescibed storage limit: $storage_limit_out. No action taken.\n\n";
+	}
+}
+
+sub is_empty {
+    my $dirname = shift;
+    opendir(my $dh, $dirname) or print "Not a directory: $dirname";
+    return scalar(grep { $_ ne "." && $_ ne ".." } readdir($dh)) == 0;
+}

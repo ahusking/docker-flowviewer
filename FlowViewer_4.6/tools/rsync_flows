@@ -1,0 +1,11 @@
+time1=`date +%s`
+flows="/data/flows"
+hosts=`ls -lad $flows/* | awk '{ print $9 }'`
+for host in $hosts; do
+        printf "\n\n******* Starting rsync for $host *******\n"
+        echo `date`
+        rsync -avh -e "ssh -q" --exclude="tmp*" --delete --chmod="u+rwx,g+rwx,o+rX,o-w" $host user@192.168.100.110:/data/flows/
+done
+time2=`date +%s`
+delta=`echo "$time2 - $time1" | bc`
+printf "\nTotal run time: $delta seconds\n"

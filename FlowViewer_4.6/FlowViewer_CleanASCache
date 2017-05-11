@@ -1,0 +1,77 @@
+#! /usr/bin/perl
+#
+#  Purpose:
+#  FlowViewer_CleanASCache is a utility for cleaning out from the AS resolving cache
+#  ($as_file) a resolved AS name that is no longer valid.
+#
+#  Description:
+#
+#  Input arguments (received from the form):
+#  Name                 Description
+#  -----------------------------------------------------------------------
+#  AS_number            AS number for which to remove AS Name
+#  "FixLong"            Will shorten all long names to 30 characters
+#
+#  Modification history:
+#  Author       Date            Vers.   Description
+#  -----------------------------------------------------------------------
+#  J. Loiacono  12/07/2007      3.3     Original released version
+#
+#$Author$
+#$Date$
+#$Header$
+#
+###########################################################################
+#
+#               BEGIN EXECUTABLE STATEMENTS
+#
+ 
+use FlowViewer_Configuration;
+use FlowViewer_Utilities;
+
+if (!$ARGV[0]) { print "\nusage: FlowViewer_CleanASCache [AS number, \"FixLong\"]\n\n"; exit; }
+
+# Tie in the 'names' file which saves AS resolved names 
+      
+if (eval 'local $SIG{"__DIE__"}= sub { }; use GDBM_File;   
+        tie %as_names, "GDBM_File", "$names_directory/as_names", GDBM_WRCREAT, 0666;' ) { 
+	if ($debug_grapher eq "Y") { print DEBUG "Using GDBM\n"; } };  
+if (eval 'local $SIG{"__DIE__"}= sub { }; use NDBM_File; use Fcntl;    
+        tie %as_names, "GDBM_File", "$names_directory/as_names", GDBM_WRCREAT, 0666;' ) {
+	if ($debug_grapher eq "Y") { print DEBUG "Using NDBM\n"; } };  
+
+if ($ARGV[0] eq "FixLong") {
+
+	print "\nFixing all long (> 30 characters) AS names ...\n\n";
+	while (($as_number,$as_name) = each(%as_names)) {
+
+		$i++;
+		if ($i < 65) { print "as_number: $as_number  as_name: $as_name\n"; }
+
+		$length_name = length($as_name);
+
+		if ($length_name > 30) { 
+			print "Fixed $as_number from $as_name ";
+                        $left_start = $length_name - 30; 
+                        $as_name = substr($as_name,$left_start,30); 
+			$as_names{$as_number} = $as_name;
+			print "to $as_name\n";
+                } elsif ($length_name < 8) {
+			push (@blanks,$as_number);
+			next;
+		}
+	}
+
+	foreach $blank_number (@blanks) {
+		print "Removing short name ($as_names{$blank_number}) for: $blank_number\n";
+		delete $as_names{$blank_number};
+	}
+
+} else {
+
+	$as_number = $ARGV[0];
+	$as_name = $as_names{$as_number};
+	
+	delete $as_names{$as_number};
+	print "\nRemoved as_number: $as_number, as_name: $as_name from $names_directory/as_names\n\n";
+}

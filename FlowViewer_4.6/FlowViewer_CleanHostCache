@@ -1,0 +1,93 @@
+#! /usr/bin/perl
+#
+#  Purpose:
+#  FlowViewer_CleanHostCache is a utility for cleaning out from the DNS resolving cache
+#  cache ($names_file) a resolved name that is no longer valid. It also has the ability
+#  to fix names that have gotten into the cache that are longer than 30 characters 
+#  (i.e., FixLong)
+#
+#  Description:
+#
+#  Input arguments (received from the form):
+#  Name                 Description
+#  -----------------------------------------------------------------------
+#  host_address         IP address of host for which to remove the entry
+#  host_address         or, name of host for which to remove the entry
+#  "FixLong"            Will shorten all long names to 30 characters
+#
+#  Modification history:
+#  Author       Date            Vers.   Description
+#  -----------------------------------------------------------------------
+#  J. Loiacono  12/07/2007      3.3     Original released version
+#  J. Loiacono  03/17/2011      3.4     Added capability to remove by name
+#
+#$Author$
+#$Date$
+#$Header$
+#
+###########################################################################
+#
+#               BEGIN EXECUTABLE STATEMENTS
+#
+ 
+use FlowViewer_Configuration;
+use FlowViewer_Utilities;
+
+if (!$ARGV[0]) { print "\nusage: FlowViewer_CleanCache [host_address, \"FixLong\"]\n\n"; exit; }
+
+# Tie in the 'names' file which saves IP address resolved names 
+      
+if (eval 'local $SIG{"__DIE__"}= sub { }; use GDBM_File;   
+        tie %host_names, "GDBM_File", "$names_directory/names", GDBM_WRCREAT, 0666;' ) { 
+	if ($debug_grapher eq "Y") { print DEBUG "Using GDBM\n"; } };  
+if (eval 'local $SIG{"__DIE__"}= sub { }; use NDBM_File; use Fcntl;    
+        tie %host_names, "GDBM_File", "$names_directory/names", GDBM_WRCREAT, 0666;' ) {
+	if ($debug_grapher eq "Y") { print DEBUG "Using NDBM\n"; } };  
+
+if ($ARGV[0] eq "FixLong") {
+
+	print "\nFixing all long (> 30 characters) host names ...\n\n";
+	while (($host_address,$host_name) = each(%host_names)) {
+
+		$i++;
+
+		$length_name = length($host_name);
+
+		if ($length_name > 30) { 
+			print "Fixed $host_address from $host_name ";
+                        $left_start = $length_name - 30; 
+                        $host_name = substr($host_name,$left_start,30); 
+			$host_names{$host_address} = $host_name;
+			print "to $host_name\n";
+                } elsif ($length_name < 8) {
+			push (@blanks,$host_address);
+			next;
+		}
+	}
+
+	foreach $blank_address (@blanks) {
+		print "Removing short name ($host_names{$blank_address}) for: $blank_address\n";
+		delete $host_names{$blank_address};
+	}
+
+} else {
+
+	$host = $ARGV[0];
+
+	print "\nAttempting to remove: $host\n";
+
+	if ($host =~ /[a-z]/) {
+		while (($host_address,$host_name) = each(%host_names)) {
+			if ($host eq $host_name) { 
+				delete $host_names{$host_address}; 
+				print "   Removed host_name: $host, host_address: $host_address from $names_directory/names\n\n";
+				exit;
+			}
+		}
+	} elsif ($host_name = $host_names{$host}) {
+		delete $host_names{$host};
+		print "Removed host_address: $host, host_name: $host_name from $names_directory/names\n\n";
+		exit;
+	}
+	print "$host not found in $names_directory/names\n"
+}

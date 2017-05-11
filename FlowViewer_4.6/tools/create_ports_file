@@ -1,0 +1,55 @@
+#! /usr/bin/perl
+#
+#  Purpose:
+#  create_ports_file reads FlowGrapher_Ports file and converts the
+#  information into a hash for quicker, easier access. The user can
+#  add port to name mappings for ports above 1024.
+#
+#  Description:
+#
+#  Simply creates a hash file which is 'tied' by FlowGrapher_Analysis
+#
+#  Input arguments:
+#  Name                 Description
+#  -----------------------------------------------------------------------
+#  None
+#
+#  Modification history:
+#  Author       Date            Vers.   Description
+#  -----------------------------------------------------------------------
+#  J. Loiacono  06/21/2014      4.4     $To support new Analysis capability
+#
+#$Author$
+#$Date$
+#$Header$
+#
+###########################################################################
+#
+#               BEGIN EXECUTABLE STATEMENTS
+#
+ 
+use FlowViewer_Configuration;
+
+$port_mapping_file = "$cgi_bin_directory/FlowGrapher_Ports";
+$debug_ports = "N";
+
+# Tie in the 'ports' file which saves port_id (port_num:port_type) to port_name mapping
+      
+if (eval 'local $SIG{"__DIE__"}= sub { }; use GDBM_File;   
+        tie %port_names, "GDBM_File", "$names_directory/ports", GDBM_WRCREAT, 0666;' ) { 
+	print DEBUG "Using GDBM\n"; };  
+if (eval 'local $SIG{"__DIE__"}= sub { }; use NDBM_File; use Fcntl;    
+        tie %port_names, "GDBM_File", "$names_directory/ports", GDBM_WRCREAT, 0666;' ) {
+	print DEBUG "Using NDBM\n"; };  
+
+open(PORTS,"<$port_mapping_file");
+while (<PORTS>) {
+
+	($port_name,$port_num,$port_type,$port_description) = split(/\s+/);
+	$port_id = "$port_num:$port_type";
+
+	if ($debug_ports eq "Y") { print "port_id: $port_id  port_name: $port_name\n"; }
+	$port_names{$port_id} = $port_name;
+}
+
+print "\nYou have created/updated the Port Mapping hash from file: $port_mapping_file\n\n";
