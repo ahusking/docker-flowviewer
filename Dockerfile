@@ -18,6 +18,8 @@ ENV APACHE_LOG_DIR /var/log/apache2
 RUN mkdir -p /var/www/html/FlowViewer
 RUN mkdir -p /var/www/html/FlowGrapher
 RUN mkdir -p /var/www/html/FlowTracker
+RUN ln -s /usr/lib/cgi-bin/ /var/www/cgi-bin
+RUN ln -s /usr/lib/cgi-bin/FlowViewer_4.6/FlowViewer.css /var/www/html/FlowViewer/FlowViewer.css
 
 RUN chown -R root:www-data /var/www
 RUN chmod u+rwx,g+rx,o+rx /var/www
@@ -26,6 +28,7 @@ RUN chown -R root:www-data /usr/lib/cgi-bin
 RUN chmod u+rwx,g+rx,o+rx /usr/lib/cgi-bin
 
 EXPOSE 80
+EXPOSE 9996
 
 #ENTRYPOINT ["ping 127.0.0.1"]
 #CMD ["-D", "FOREGROUND"]
