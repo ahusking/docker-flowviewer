@@ -1,0 +1,72 @@
+#!/bin/sh
+#
+# FlowMonitor:      Starts all processes concerning FlowMonitor
+#
+# description:  This script starts up the the FlowMonitor tools (Collector and Grapher)
+#
+# processname:  There is not a single process associated with these
+#               actions, rather there are multiple processes. This
+#               script takes care of all of them.
+#
+# can be restarted by using the following command:
+#
+# sudo /etc/init.d/FlowMonitor restart
+ 
+RETVAL=0
+ 
+start() {
+    cd /usr/lib/cgi-bin/FlowViewer
+    echo -n $"Starting FlowMonitor processes: "
+ 
+    echo -n "FlowMonitor_Collector "
+ 
+    /usr/lib/cgi-bin/FlowViewer/FlowMonitor_Collector &> /dev/null &
+    RETVAL=$?
+ 
+    echo -n "FlowMonitor_Grapher "
+ 
+    /usr/lib/cgi-bin/FlowViewer/FlowMonitor_Grapher &> /dev/null &
+    RETVAL=$?
+ 
+    echo ""
+}
+stop() {
+    echo -n $"Stopping FlowMonitor processes: "
+    RETVAL=0
+ 
+    for p in `pidof perl`
+    do
+        ps $p | grep FlowMonitor_Collector > /dev/null
+        if [ $? -eq 0 ]; then
+            echo -n "FlowMonitor_Collector "
+            kill $p
+        fi
+ 
+        ps $p | grep FlowMonitor_Grapher > /dev/null
+        if [ $? -eq 0 ]; then
+            echo -n "FlowMonitor_Grapher "
+            kill $p
+        fi
+    done
+ 
+    echo ""
+}
+ 
+# See how we were called.
+ 
+case "$1" in
+    start)
+        start
+        ;;
+    stop)
+        stop
+        ;;
+    restart)
+        stop
+        start
+        ;;
+    *)
+        echo $"Usage: $0 {start|stop|restart}"
+        ;;
+esac
+exit $RETVAL
