@@ -1,9 +1,9 @@
 FROM ahusking/ubuntu-base
 MAINTAINER Andrew Husking (andrew@husking.id.au)
 
+RUN echo ServerName `hostname` >> /etc/apache2/apache2.conf
 RUN  a2enmod cgi
 RUN printf '\n%s\n  %s\n  %s\n  %s\n %s\n' '<Directory /usr/lib/cgi-bin>' 'Options Indexes FollowSymLinks'  'AllowOverride None' 'Require all granted' '</Directory>' >> /etc/apache2/apache2.conf
-RUN echo ServerName `hostname` >> /etc/apache2/apache2.conf
 
 COPY FlowViewer_4.6/ /usr/lib/cgi-bin/FlowViewer/
 RUN mkdir -p /var/www/html/FlowViewer
